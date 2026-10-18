@@ -1,5 +1,5 @@
 """agentsignal check — crash-test an agent for double execution / lost approvals."""
-import argparse, json, sys
+import argparse, json, re, sys
 from .detectors import langgraph_crash
 
 def main(argv=None):
@@ -107,6 +107,15 @@ def main(argv=None):
         print(md, file=sys.stderr if a.json else sys.stdout)
     code = 1 if any(r["status"] == "FAIL" for r in report["results"]) else 0
     code = max(code, scan_code)
+    base = next((r for r in report["results"] if r["detector"] == "baseline"), None)
+    if base is not None and base["status"] == "ERROR":
+        # a broken setup (import error, bad factory, graph/agent raising) must never pass CI
+        lines = [l.strip() for l in (base.get("detail") or "").strip().splitlines() if l.strip()]
+        exc = [l for l in lines if re.match(r"^[A-Za-z_][\w.]*(Error|Exception|Exit|Interrupt)\b", l)]
+        last = (exc or lines or ["(no error output)"])[-1:]
+        print("agentsignal: ERROR: the baseline run failed before any crash test ran (setup, import or "
+              f"graph/agent error), so nothing was tested. Last error: {last[0][-300:]}", file=sys.stderr)
+        code = 2
     if a.upload or a.upload_strict:
         from .upload import upload
         ok, why = upload(report, out=sys.stderr if a.json else sys.stdout)

@@ -6,6 +6,7 @@
 - Exit 1 on any high finding, 0 otherwise (`--strict` fails on medium too), 2 on usage error. Unparseable files are listed as skipped. `--effect-names`, `--exclude`, `--include-tests`, `--verbose`, inline `# agentsignal: ignore[...]` and `[tool.agentsignal.scan]` in pyproject.toml (suppressions are counted).
 - `--effect` is now required only for the crash test; `--scan` needs neither `--effect` nor `--graph`. `--scan` with `--graph/--agent` scans first, then runs the crash test.
 - Tests: `tests/test_scan.py` covers every rule, the board 53 acceptance fixtures, a precision corpus of the public templates (`tests/fixtures/scan/corpus/`), false-positive guards, suppression/config, skipped files, a no-import guard, golden terminal/JSON output, and a 2,000-file speed check.
+- **Fix:** when the baseline run errors (setup, import or graph/agent failure), `agentsignal check` now exits 2 with a clear "baseline run failed" error on stderr. It used to exit 0, so a broken setup passed CI. Tests: `tests/test_baseline_error.py`.
 
 ## 0.3.2 (2026-10-16)
 - **Fix:** with `--framework openai-agents`, fix links in the terminal card, plain output, Markdown report and HTML report pointed at LangGraph templates. They now point at `/templates/openai-agents-idempotent-approval/` (double execution, replay) and `/templates/openai-agents-approval-resume/` (lost approval on restart), with OpenAI Agents wording in the Markdown report. LangGraph links are unchanged. Links live in one per-framework table (`agentsignal_check/links.py`).
