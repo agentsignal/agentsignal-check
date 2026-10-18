@@ -139,7 +139,7 @@ agentsignal check --graph app:build --effect app.tools:charge --json --upload
 Prints the `run_id` and a free fix link (detector, status, url) for every failing detector (the CLI's own link table, never a Pro template). `repo` and `commit_sha` are filled from `GITHUB_REPOSITORY`/`GITHUB_SHA` or your git checkout. Upload errors (bad key, too large, rate limit, network) are reported but don't change the exit code unless you pass `--upload-strict` (exit 3). Without a key, `--upload` only prints a one-line hint.
 
 ## Fixing failures
-Every FAIL in the report links to a free tested pattern on [tryagentsignal.com](https://tryagentsignal.com). Want it done for you? Use the [$79 Fix](https://tryagentsignal.com/fix).
+Every FAIL in the report links to a free fix page (guide or template) on [tryagentsignal.com](https://tryagentsignal.com). Want it done for you? Use the [$79 Fix](https://tryagentsignal.com/fix).
 
 ## Develop / test
 ```bash
