@@ -11,7 +11,7 @@ with RunState.from_json() in a fresh process. Detectors:
 A duplicate = same call args producing DISTINCT results (same result = deduped by an idempotency key).
 """
 import json, os, subprocess, sys, tempfile
-from .langgraph_crash import _dups
+from .langgraph_crash import _dups, _inflight, INFLIGHT_NOTE
 
 CHILD = os.path.join(os.path.dirname(__file__), "_oai_child.py")
 
@@ -36,7 +36,7 @@ def run(agent, effects, ctx):
         dups, n = _dups(led)
         results.append({"detector": "baseline", "status": "FAIL" if dups else "PASS",
                         "detail": f"{n} effect call(s) in a clean run" + (f"; duplicates {dups}" if dups else "")})
-        worst = []
+        worst, notes = [], []
         for k in range(1, n + 1):
             st, led = f"{d}/c{k}.json", f"{d}/c{k}.ledger"
             if _child("start", agent, effects, st, led, ctx).returncode:
@@ -45,13 +45,13 @@ def run(agent, effects, ctx):
             if r1.returncode != 137:
                 worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})"); continue
             r2 = _child("resume", agent, effects, st, led, ctx)
-            if r2.returncode != 0:
-                worst.append(f"crash@{k}: resume failed: {_err(r2)}"); continue
             dups, _ = _dups(led)
             if dups: worst.append(f"crash after effect #{k} -> re-executed {dups}")
+            elif _inflight(led): notes.append(f"crash@{k}: {INFLIGHT_NOTE}")   # clean refusal: no duplicate observed
+            elif r2.returncode != 0: worst.append(f"crash@{k}: resume failed: {_err(r2)}")
         results.append({"detector": "double_execution.kill_resume",
                         "status": "FAIL" if any("re-executed" in w for w in worst) else ("PASS" if not worst else "WARN"),
-                        "detail": "; ".join(worst) or f"no duplicates across {n} crash point(s) (resumed from RunState.from_json)"})
+                        "detail": "; ".join(worst + notes) or f"no duplicates across {n} crash point(s) (resumed from RunState.from_json)"})
         # lost approval
         st, led = f"{d}/lost.json", f"{d}/lost.ledger"
         s = _child("start", agent, effects, st, led, ctx)

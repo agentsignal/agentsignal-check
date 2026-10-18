@@ -13,7 +13,13 @@ def wrap(spec):
     @functools.wraps(orig)
     def w(*a, **k):
         global calls
-        res = orig(*a, **k)
+        try:
+            res = orig(*a, **k)
+        except Exception as e:
+            if any(c.__name__ == "EffectInFlight" for c in type(e).__mro__):   # matched by name: no import dependency
+                with open(LEDGER + ".inflight", "a") as fh:
+                    fh.write(json.dumps([spec, repr(a), repr(sorted(k.items()))]) + "\n"); fh.flush(); os.fsync(fh.fileno())
+            raise
         with open(LEDGER, "a") as fh:
             fh.write(json.dumps([spec, repr(a), repr(sorted(k.items())), repr(res)]) + "\n"); fh.flush(); os.fsync(fh.fileno())
         calls += 1

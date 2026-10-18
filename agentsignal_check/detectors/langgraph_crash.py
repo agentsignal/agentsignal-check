@@ -30,6 +30,13 @@ def _dups(ledger):
         res[f"{spec}{a}{k}"].add(r)
     return {k: len(v) for k, v in res.items() if len(v) > 1}, len(rows)
 
+INFLIGHT_NOTE = "in flight; retried after lease with the same provider key"
+
+def _inflight(ledger):
+    """The watched effect raised EffectInFlight (a ledger lease held by the killed attempt) during this resume."""
+    p = ledger + ".inflight"
+    return os.path.exists(p) and os.path.getsize(p) > 0
+
 def run(graph, effects, inp, resume):
     results = []
     with tempfile.TemporaryDirectory() as d:
@@ -43,7 +50,7 @@ def run(graph, effects, inp, resume):
         results.append({"detector": "baseline", "status": "FAIL" if dups else "PASS",
                         "detail": f"{n} effect call(s) in a clean run" + (f"; duplicates {dups}" if dups else "")})
         # kill after each effect, then resume
-        worst = []
+        worst, notes = [], []
         for k in range(1, n + 1):
             db, led = f"{d}/c{k}.db", f"{d}/c{k}.ledger"
             r1 = _child("full", graph, effects, db, led, inp, resume, crash_at=k)
@@ -51,33 +58,35 @@ def run(graph, effects, inp, resume):
                 worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})")
                 continue
             r2 = _child("resume", graph, effects, db, led, inp, resume)
-            if r2.returncode != 0:
-                worst.append(f"crash@{k}: resume failed: {r2.stderr.strip().splitlines()[-1:]}")
-                continue
             dups, _ = _dups(led)
             if dups:
                 worst.append(f"crash after effect #{k} -> re-executed {dups}")
+            elif _inflight(led):          # clean refusal: no duplicate observed
+                notes.append(f"crash@{k}: {INFLIGHT_NOTE}")
+            elif r2.returncode != 0:
+                worst.append(f"crash@{k}: resume failed: {r2.stderr.strip().splitlines()[-1:]}")
         results.append({"detector": "double_execution.kill_resume",
                         "status": "FAIL" if any("re-executed" in w for w in worst) else ("PASS" if not worst else "WARN"),
-                        "detail": "; ".join(worst) or f"no duplicates across {n} crash point(s)"})
+                        "detail": "; ".join(worst + notes) or f"no duplicates across {n} crash point(s)"})
         # kill BEFORE each checkpoint write (LangGraph #8039: put_writes vs put ordering)
         nput = sum(1 for _ in open(plog)) if os.path.exists(plog) else 0
-        bad, warn = [], []
+        bad, warn, pnotes = [], [], []
         for k in range(1, nput + 1):
             db, led = f"{d}/p{k}.db", f"{d}/p{k}.ledger"
             r1 = _child("full", graph, effects, db, led, inp, resume, put_crash_at=k)
             if r1.returncode != 137:
                 continue  # run finished before reaching put #k (e.g. paused) -- nothing to test
             r2 = _child("resume", graph, effects, db, led, inp, resume)
-            if r2.returncode != 0:
-                warn.append(f"put#{k}: resume failed: {r2.stderr.strip().splitlines()[-1:]}")
-                continue
             dups, _ = _dups(led)
             if dups:
                 bad.append(f"crash before checkpoint #{k} -> re-executed {dups}")
+            elif _inflight(led):          # clean refusal: no duplicate observed
+                pnotes.append(f"put#{k}: {INFLIGHT_NOTE}")
+            elif r2.returncode != 0:
+                warn.append(f"put#{k}: resume failed: {r2.stderr.strip().splitlines()[-1:]}")
         results.append({"detector": "double_execution.kill_before_checkpoint",
                         "status": "FAIL" if bad else ("WARN" if warn else "PASS"),
-                        "detail": "; ".join(bad + warn) or f"no duplicates across {nput} checkpoint write(s)"})
+                        "detail": "; ".join(bad + warn + pnotes) or f"no duplicates across {nput} checkpoint write(s)"})
         # approval replay + lost approval
         db, led = f"{d}/rep.db", f"{d}/rep.ledger"
         r = _child("replay", graph, effects, db, led, inp, resume)
