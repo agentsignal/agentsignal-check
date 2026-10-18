@@ -58,9 +58,11 @@ def _resolve_node_fn(fctx, expr, at):
 
 
 class Builder:
-    def __init__(self):
+    def __init__(self, recv=None, scope=None):
+        self.recv, self.scope = recv, scope
         self.nodes = {}          # name -> [fn defs] ([] = unresolved / external)
         self.edges = {}          # src -> set(dst) ; "*" = unknown (any node)
+        self.loop_nodes = []     # (fn, for-loop) for add_node(...) inside a loop that also adds edges (fan-out)
 
     def edge(self, a, b):
         self.edges.setdefault(a, set()).add(b)
@@ -76,7 +78,7 @@ def collect_builders(fctx):
             if meth not in ("add_node", "add_edge", "add_conditional_edges", "add_sequence"):
                 continue
             recv = dotted(n.func.value) or "?"
-            b = builders.setdefault((id(fn_scope), recv), Builder())
+            b = builders.setdefault((id(fn_scope), recv), Builder(recv, fn_scope))
             if meth == "add_node":
                 if len(n.args) >= 2:
                     name, fexpr = str_value(n.args[0]), n.args[1]
@@ -88,6 +90,12 @@ def collect_builders(fctx):
                     if fexpr is None:
                         continue
                 fns = _resolve_node_fn(fctx, fexpr, n)
+                loop = _enclosing_loop(fctx, n, fn_scope)
+                if loop is not None and any(isinstance(x, ast.Call) and isinstance(x.func, ast.Attribute)
+                                            and x.func.attr == "add_edge" and dotted(x.func.value) == recv
+                                            for x in ast.walk(loop)):
+                    for f in fns:
+                        b.loop_nodes.append((f, loop))
                 if name is None:
                     name = fns[0].name if fns else (last_name(fexpr) or "?")
                 b.nodes.setdefault(name, []).extend(fns)
@@ -137,6 +145,75 @@ def collect_builders(fctx):
                                 for v in vals:
                                     b.edge(name, _node_key(fctx, v) or "*")
     return list(builders.values())
+
+
+def _enclosing_loop(fctx, node, stop):
+    p = fctx.parent.get(node)
+    while p is not None and p is not stop:
+        if isinstance(p, (ast.For, ast.AsyncFor)):
+            return p
+        p = fctx.parent.get(p)
+    return None
+
+
+def _loop_count(fctx, loop):
+    """Number of iterations when the loop walks a literal (or a name bound to one at module/def level)."""
+    it = loop.iter
+    if isinstance(it, ast.Name):
+        for scope in fctx.scope_chain(loop):
+            for st in getattr(scope, "body", []):
+                if isinstance(st, ast.Assign) and any(isinstance(t, ast.Name) and t.id == it.id for t in st.targets):
+                    it = st.value
+            if not isinstance(it, ast.Name):
+                break
+    if isinstance(it, (ast.List, ast.Tuple, ast.Set)):
+        return len(it.elts)
+    if isinstance(it, ast.Dict):
+        return len(it.keys)
+    if isinstance(it, ast.Call) and last_name(it.func) == "range" and len(it.args) == 1 and isinstance(it.args[0], ast.Constant):
+        return it.args[0].value if isinstance(it.args[0].value, int) else None
+    return None
+
+
+def parallel_nodes(fctx, b):
+    """[(fn, count_hint)] for nodes with parallel siblings: >=2 nodes fanned out from one source, or nodes
+    added in a loop that also adds their edges. count_hint = size of that fan-out (None if unknown)."""
+    out = []
+    for src, dsts in b.edges.items():
+        named = [d for d in dsts if d in b.nodes]
+        if len(named) >= 2:
+            for d in named:
+                for f in b.nodes[d]:
+                    out.append((f, len(named)))
+    for f, loop in b.loop_nodes:
+        out.append((f, _loop_count(fctx, loop)))
+    seen, uniq = set(), []
+    for f, c in out:
+        if id(f) not in seen:
+            seen.add(id(f)); uniq.append((f, c))
+    return uniq
+
+
+def subgraph_builders(fctx, builders):
+    """Builders whose .compile() result is mounted as a node of another graph (a compiled subgraph)."""
+    compiled_names, direct = {}, set()
+    for n in ast.walk(fctx.tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "compile":
+            recv = dotted(n.func.value)
+            par = fctx.parent.get(n)
+            if isinstance(par, ast.Call) and isinstance(par.func, ast.Attribute) and par.func.attr == "add_node" and n in par.args:
+                direct.add(recv)
+            elif isinstance(par, ast.Assign):
+                for t in par.targets:
+                    if isinstance(t, ast.Name):
+                        compiled_names[t.id] = recv
+    mounted = set(direct)
+    for n in ast.walk(fctx.tree):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "add_node":
+            for a in n.args:
+                if isinstance(a, ast.Name) and a.id in compiled_names:
+                    mounted.add(compiled_names[a.id])
+    return [b for b in builders if b.recv in mounted]
 
 
 def _module_nodes(fctx):
@@ -279,6 +356,8 @@ def run(fctx, clf):
                     f"`if state.get(<id>)` guard before it.",
                     f"no ledger lookup before {e.name}() on resume path", effect=e))
 
+    out.extend(version_rules(fctx, clf, reported))
+
     # AS105: Command(resume=...) inside a web handler / queue consumer with no dedupe evidence
     for fn in fctx.funcs:
         if not is_handler(fn):
@@ -292,4 +371,87 @@ def run(fctx, clf):
                         f"first; a double-click or redelivery resumes twice.",
                         "Command(resume=...) with no processed-id check", group="handler"))
                 break
+    return out
+
+
+# ---------------- version-aware rules (langgraph bugs fixed in 1.2.16) ----------------
+BUGS = {
+    "AS106": ("langgraph#9315", "https://github.com/langchain-ai/langgraph/pull/9315"),
+    "AS107": ("langgraph#9322", "https://github.com/langchain-ai/langgraph/pull/9322"),
+    "AS108": ("langgraph#9314", "https://github.com/langchain-ai/langgraph/pull/9314"),
+}
+
+
+def _version_severity(fctx):
+    """('high', why) when the project pins/resolves langgraph < 1.2.16, ('medium', note) when unknown, None when fixed."""
+    from .versions import langgraph_version, FIX_NOTE
+    v = langgraph_version(getattr(fctx, "abspath", fctx.path))
+    if v.status == "fixed":
+        return None
+    if v.status == "affected":
+        return "high", f"{v.describe()} is affected; {FIX_NOTE}"
+    return "medium", (f"{v.describe()} may be affected; " if (v.version or v.spec) else "") + FIX_NOTE
+
+
+def version_rules(fctx, clf, reported):
+    out = []
+    builders = collect_builders(fctx)
+    sev = None
+    # AS106 (#9315): effect after interrupt() in a node with parallel siblings inside a compiled subgraph
+    for b in subgraph_builders(fctx, builders):
+        for fn, _ in parallel_nodes(fctx, b):
+            ints = _interrupts(fctx, fn)
+            if not ints or func_evidence(fn):
+                continue
+            fi = fctx.funcs.get(fn)
+            for e in effects_in(fctx, clf, fn):
+                if pos(e.call) <= pos(ints[0]) or effect_evidence(e, fi) == "ok":
+                    continue
+                sev = sev or _version_severity(fctx) or ("none", "")
+                if sev[0] == "none":
+                    return out
+                tag, url = BUGS["AS106"]
+                out.append(finding(
+                    fctx, "AS106", sev[0], FW, fn, e.line, e.call.col_offset,
+                    f"`{e.name}()` runs after `interrupt()` in `{fn.name}()`, a parallel node inside a compiled subgraph; "
+                    f"answering the approvals one at a time re-runs already-answered siblings ({tag}, {url}). {sev[1]}.",
+                    f"{e.name}() re-runs per later answer ({tag})", effect=e))
+    # AS107 (#9322): Command(resume=..., update=...) while a node calls interrupt() more than once
+    multi = [fn for fn in fctx.funcs if len(_interrupts(fctx, fn)) >= 2
+             or any(_loop_with_interrupt(fctx, fn, i, [i]) is not None for i in _interrupts(fctx, fn))]
+    if multi:
+        for n in ast.walk(fctx.tree):
+            if isinstance(n, ast.Call) and last_name(n.func) == "Command" and {"resume", "update"} <= {k.arg for k in n.keywords}:
+                sev = sev or _version_severity(fctx) or ("none", "")
+                if sev[0] == "none":
+                    return out
+                tag, url = BUGS["AS107"]
+                fn = fctx.enclosing(n) or fctx.tree
+                out.append(finding(
+                    fctx, "AS107", sev[0], FW, fn, n.lineno, n.col_offset,
+                    f"`Command(resume=..., update=...)` resumes a graph where `{multi[0].name}()` calls `interrupt()` "
+                    f"more than once; the update is applied twice ({tag}, {url}). {sev[1]}.",
+                    f"Command(resume, update) applied twice ({tag})", group="version"))
+    # AS108 (#9314): durability="exit" with 3+ parallel interrupt() nodes
+    n_par = 0
+    for b in builders:
+        loop_counts = {id(f): c for f, c in ((f, _loop_count(fctx, lp)) for f, lp in b.loop_nodes)}
+        total = 0
+        for fn, _ in parallel_nodes(fctx, b):
+            if _fn_interrupts(fctx, fn):
+                total += loop_counts.get(id(fn)) or 1      # a loop-made node counts once per known iteration
+        n_par = max(n_par, total)
+    if n_par >= 3:
+        for n in ast.walk(fctx.tree):
+            if isinstance(n, ast.Call) and any(k.arg == "durability" and str_value(k.value) == "exit" for k in n.keywords):
+                sev = sev or _version_severity(fctx) or ("none", "")
+                if sev[0] == "none":
+                    return out
+                tag, url = BUGS["AS108"]
+                fn = fctx.enclosing(n) or fctx.tree
+                out.append(finding(
+                    fctx, "AS108", sev[0], FW, fn, n.lineno, n.col_offset,
+                    f"`durability=\"exit\"` with {n_par} parallel `interrupt()` nodes: resuming them one at a time "
+                    f"applies earlier answers twice ({tag}, {url}). {sev[1]}.",
+                    f"durability=\"exit\" + {n_par} parallel interrupts ({tag})", group="version"))
     return out

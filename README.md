@@ -49,10 +49,15 @@ Each finding gives `file:line`, the function, a one-line message, the rule id an
 | AS103 | LangGraph | medium | a node or tool that runs after an approval and calls an effect with no idempotency key |
 | AS104 | LangGraph | medium | the same, with no ledger lookup or `if state.get(<id>)` guard before the effect |
 | AS105 | LangGraph | medium | `Command(resume=...)` in a web handler or queue consumer with no processed-id, state or lock check |
+| AS106 | LangGraph < 1.2.16 | high / medium | a side effect after `interrupt()` in a parallel node inside a compiled subgraph: answering approvals one at a time re-runs answered siblings ([langgraph#9315](https://github.com/langchain-ai/langgraph/pull/9315)) |
+| AS107 | LangGraph < 1.2.16 | high / medium | `Command(resume=..., update=...)` on a graph whose node calls `interrupt()` more than once: the update is applied twice ([#9322](https://github.com/langchain-ai/langgraph/pull/9322)) |
+| AS108 | LangGraph < 1.2.16 | high / medium | `durability="exit"` with 3+ parallel `interrupt()` nodes: earlier answers applied twice ([#9314](https://github.com/langchain-ai/langgraph/pull/9314)) |
 | AS201 | OpenAI Agents | high | `@function_tool(needs_approval=...)` whose effect has no idempotency key |
 | AS202 | OpenAI Agents | medium | the same for a tool without `needs_approval` |
 | AS203 | OpenAI Agents | medium | `RunState.from_json/from_string` + approve/run in a handler with no processed-id check |
 | AS204 | OpenAI Agents | low | approval tools whose RunState is never saved with `to_json()`/`to_string()` (shown with `--verbose`/`--json`) |
+
+AS106–AS108 are version-aware. The scan reads the langgraph version from the nearest `uv.lock` (resolved version), `requirements*.txt` or `pyproject.toml` at or above each file (up to the repo root). They're high when the project pins or resolves langgraph < 1.2.16, medium with the note "fixed in 1.2.16; pin >=1.2.16" when no version (or only an open range) is found, and not reported when it requires >= 1.2.16. AS101 is unconditional.
 
 Idempotency evidence: a kwarg named `idempotency_key`, `idempotencyKey`, `request_id`, `dedupe_key` or `client_token`; a `key=` built from a run, thread, call or tool-call id (or a stable hash of one); an `Idempotency-Key` header; or a `@ledger`, `@once`, `@idempotent` or `@side_effect_ledger` decorator. A key from `uuid4()`, `time.time()` or `random` is flagged as "key is random per call".
 

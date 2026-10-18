@@ -295,7 +295,8 @@ def framework_versions():
 
 def scan(root, framework="auto", effect_names=(), excludes=(), include_tests=False, ignore_rules=()):
     """Run the static scan. Returns the `scan` dict (JSON shape) plus private keys used by the renderer."""
-    from . import langgraph as lg, openai_agents as oai
+    from . import langgraph as lg, openai_agents as oai, versions
+    versions.clear_cache()
     cfg, cfg_path = load_config(root)
     effect_names = list(effect_names) + list(cfg.get("effect_names", []) or [])
     excludes = list(excludes) + list(cfg.get("exclude", []) or [])
@@ -321,6 +322,7 @@ def scan(root, framework="auto", effect_names=(), excludes=(), include_tests=Fal
             skipped.append({"file": disp, "reason": f"unreadable: {e.__class__.__name__}"})
             continue
         fctx = FileCtx(tree, src, disp)
+        fctx.abspath = ap
         fws = detect_frameworks(fctx)
         if not fws:
             fz = frozen_framework(fctx)
@@ -395,6 +397,7 @@ GROUPS = [
     ("rerun", ("tool will re-run on resume", "tools will re-run on resume")),
     ("handler", ("approval handler can be delivered twice", "approval handlers can be delivered twice")),
     ("persist", ("approval may be lost on restart", "approvals may be lost on restart")),
+    ("version", ("place hits a known langgraph bug for your version", "places hit known langgraph bugs for your version")),
 ]
 
 
