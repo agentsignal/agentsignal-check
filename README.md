@@ -17,6 +17,7 @@ agentsignal check --graph myapp.graph:build --effect myapp.payments:charge \
 - `--graph mod:factory`: `factory(checkpointer)` returns your compiled LangGraph graph. The harness injects a SQLite checkpointer so state survives process death.
 - `--effect mod:func` (can be repeated): the side effects that must happen at most once, such as a charge, an email or a delete.
 - `--resume JSON`: the value sent to every `interrupt()`. Default `true` (approve).
+- `--multi-interrupt each|map`: when several interrupts are pending (parallel approvals, subgraphs), answer them one at a time by interrupt id (`each`, default, like an approval UI) or all at once with an `{interrupt_id: value}` map (`map`).
 - `--report FILE`: writes a markdown report with fixes. `--json` prints machine-readable output.
 - Exit code 1 on any FAIL, so you can use it as a CI gate.
 

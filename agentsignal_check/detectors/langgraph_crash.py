@@ -13,9 +13,11 @@ import json, os, subprocess, sys, tempfile, collections
 
 CHILD = os.path.join(os.path.dirname(__file__), "_lg_child.py")
 
+MULTI = {"mode": "each"}
+
 def _child(mode, graph, effects, db, ledger, inp, resume, crash_at=0, put_crash_at=0, put_log=""):
     env = dict(os.environ, AS_LEDGER=ledger, AS_CRASH_AT=str(crash_at), AS_SCENARIO=db,
-               AS_PUT_CRASH_AT=str(put_crash_at), AS_PUT_LOG=put_log)  # AS_SCENARIO: per-scenario scratch key for user stores
+               AS_PUT_CRASH_AT=str(put_crash_at), AS_PUT_LOG=put_log, AS_MULTI_RESUME=MULTI["mode"])  # AS_SCENARIO: per-scenario scratch key for user stores
     cmd = [sys.executable, CHILD, mode, graph, json.dumps(effects), db, json.dumps(inp), json.dumps(resume)]
     return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
 
@@ -37,7 +39,11 @@ def _inflight(ledger):
     p = ledger + ".inflight"
     return os.path.exists(p) and os.path.getsize(p) > 0
 
-def run(graph, effects, inp, resume):
+def run(graph, effects, inp, resume, multi="each"):
+    """multi: how several pending interrupts are answered -- "each" (one at a time, by interrupt id) or "map"."""
+    if multi not in ("each", "map"):
+        raise ValueError("multi must be 'each' or 'map'")
+    MULTI["mode"] = multi
     results = []
     with tempfile.TemporaryDirectory() as d:
         # baseline

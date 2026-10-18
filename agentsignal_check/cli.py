@@ -19,6 +19,9 @@ def main(argv=None):
     c.add_argument("--effect", action="append", help="module:function side effect to watch (repeatable; required for the crash test)")
     c.add_argument("--input", default="{}", help="JSON input for the first invoke")
     c.add_argument("--resume", default="true", help="JSON value sent to every interrupt (auto-approve)")
+    c.add_argument("--multi-interrupt", choices=["each", "map"], default="each",
+                   help="langgraph: when several interrupts are pending, answer them one at a time by interrupt id "
+                        "(each, default) or all at once with an {interrupt_id: value} map (map)")
     c.add_argument("--report", help="write a markdown report to this path")
     c.add_argument("--html", help="write a self-contained HTML report card")
     c.add_argument("--png", help="write a 1200x630 OG card PNG (needs the [png] extra)")
@@ -77,7 +80,7 @@ def main(argv=None):
             print("agentsignal: LangGraph support not installed. Run:\n"
                   '  pip install "agentsignal-check[langgraph]"', file=sys.stderr)
             return 2
-        report = langgraph_crash.run(a.graph, a.effect, json.loads(a.input), json.loads(a.resume))
+        report = langgraph_crash.run(a.graph, a.effect, json.loads(a.input), json.loads(a.resume), multi=a.multi_interrupt)
     from .env import collect
     report["env"] = collect()
     if scan_result is not None:
