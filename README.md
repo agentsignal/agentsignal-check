@@ -42,7 +42,16 @@ Prove it on your code (60s): agentsignal check --graph my_agent.graph:build --ef
 
 Each finding gives `file:line`, the function, a one-line message, the rule id and its confidence (a path too long for its column goes on its own line, with the message below it). A result with findings ends with the count of tools that will re-run on resume ("may re-run" when every such finding is medium confidence) and the fix link. A clean scan ends with `No re-run risks found by static scan.` and no link. The "Prove it" line names `<module>:build` only when that file defines `build()`.
 
-The langgraph version in the header is your project's, from the same lookup the version-aware rules use (nearest `uv.lock`, `requirements*.txt` or `pyproject.toml`), with the file it came from. With no pin or lockfile it says `langgraph version unknown (no pin found)`; it never shows the version installed next to agentsignal. openai-agents is shown without a version (no project lookup yet). In `--json`, `scan.frameworks.<name>` has `version`, `spec` (a range, when there's no exact pin) and `source`; all `null` when unknown.
+The langgraph version in the header is your project's, from the same lookup the version-aware rules use (nearest `uv.lock`, `requirements*.txt` or `pyproject.toml`), with the file it came from. It never shows the version installed next to agentsignal. What it prints:
+
+| Your project | Header | `--json` `version` / `spec` / `source` |
+|---|---|---|
+| exact pin or lockfile (`langgraph==1.2.15`, `uv.lock`) | `langgraph 1.2.15 (requirements.txt)` | `"1.2.15"` / `null` / `"requirements.txt"` |
+| a range (`langgraph>=1.0`, Poetry `^1.2.15` shown as `>=1.2.15`) | `langgraph >=1.0 (pyproject.toml)` | `null` / `">=1.0"` / `"pyproject.toml"` |
+| listed with no version (`langgraph`, Poetry `"*"`) | `langgraph unpinned (requirements.txt)` | `null` / `null` / `"requirements.txt"` |
+| not listed anywhere, no lockfile | `langgraph version unknown (no pin found)` | `null` / `null` / `null` |
+
+`source` is relative to the scan root (for a single file, its directory), the same in the header and in `--json`. When files in one scan resolve to different pins (a monorepo), the header lists each distinct version once with its files (`langgraph 1.2.15 (a/requirements.txt, b/requirements.txt), 1.2.16 (c/requirements.txt)`), and `--json` adds `versions` with one entry per pin file. openai-agents is shown without a version (no project lookup yet).
 
 | Rule | Framework | Confidence | Flags |
 |---|---|---|---|
@@ -59,7 +68,7 @@ The langgraph version in the header is your project's, from the same lookup the 
 | AS203 | OpenAI Agents | medium | `RunState.from_json/from_string` + approve/run in a handler with no processed-id check |
 | AS204 | OpenAI Agents | low | approval tools whose RunState is never saved with `to_json()`/`to_string()` (shown with `--verbose`/`--json`) |
 
-AS106–AS108 are version-aware. The scan reads the langgraph version from the nearest `uv.lock` (resolved version), `requirements*.txt` or `pyproject.toml` at or above each file (up to the repo root). They're high when the project pins or resolves langgraph < 1.2.16, medium with the note "fixed in 1.2.16; pin >=1.2.16" when no version (or only an open range) is found, and not reported when it requires >= 1.2.16. AS101 is unconditional.
+AS106–AS108 are version-aware. The scan reads the langgraph version from the nearest `uv.lock` (resolved version), `requirements*.txt` or `pyproject.toml` at or above each file (up to the repo root). They're high when the project pins or resolves langgraph < 1.2.16, medium with the note "fixed in 1.2.16; pin >=1.2.16" when no version is found, langgraph is unpinned, or only an open range is given, and not reported when it requires >= 1.2.16. AS101 is unconditional. In the terminal, AS107/AS108 are grouped under "These N places hit known langgraph bugs for your version" only when every one is high (your pin is affected); otherwise the heading says "may hit known langgraph bugs". Every group with an AS106–AS108 finding ends with the line `These langgraph bugs are fixed in 1.2.16; pin langgraph>=1.2.16.`
 
 Idempotency evidence: a kwarg named `idempotency_key`, `idempotencyKey`, `request_id`, `dedupe_key` or `client_token`; a `key=` built from a run, thread, call or tool-call id (or a stable hash of one); an `Idempotency-Key` header; or a `@ledger`, `@once`, `@idempotent` or `@side_effect_ledger` decorator. A key from `uuid4()`, `time.time()` or `random` is flagged as "key is random per call".
 
@@ -99,16 +108,18 @@ The grade, risks and badge are computed only from the detector results of the cu
 |---|---|---|
 | `baseline` | none (clean run, auto-approve) | an effect ran twice with no crash (side effect before `interrupt()` in the same node) |
 | `double_execution.kill_resume` | hard kill (`os._exit`) right after each effect, then resume in a fresh process | the effect was re-executed |
-| `double_execution.kill_before_checkpoint` | hard kill before each checkpoint `put()`, after `put_writes` ([langgraph#8039](https://github.com/langchain-ai/langgraph/issues/8039)) | the effect was re-executed on recovery |
+| `double_execution.kill_before_checkpoint` | for each checkpoint `put()` #k: the pending writes saved so far land, checkpoint #k is never written, the next step runs anyway (as it does while LangGraph's async checkpoint write is still in flight), then a hard kill at the next `put()`; resume in a fresh process ([langgraph#8039](https://github.com/langchain-ai/langgraph/issues/8039)). Deterministic: the same graph gives the same result every run | the effect was re-executed on recovery |
 | `approval.lost_on_restart` | restart the process while paused | the pending approval is gone |
 | `approval.replay` | deliver the same approval twice, including against a stale checkpoint | the effect ran again |
 
 A duplicate means the same effect args returned **different** results. A retry that returns the same result (for example, a provider idempotency key) passes.
 
-## Detectors (OpenAI Agents SDK, preview on branch oai-runstate)
+A graph that never calls `interrupt()` gets `approval.lost_on_restart` and `approval.replay` as SKIP with the reason ("graph never interrupted"); SKIP never fails the run. A WARN or ERROR always says what happened, e.g. `resume failed (rc=-11 SIGSEGV): child killed by a signal (rc=-11 SIGSEGV) with no error output`.
+
+## Detectors (OpenAI Agents SDK)
 
 ```bash
-pip install "agentsignal-check[openai-agents] @ git+https://github.com/MounirMeziani/agentsignal-check@oai-runstate"
+pip install "agentsignal-check[openai-agents] @ git+https://github.com/MounirMeziani/agentsignal-check@v0.4.0"
 agentsignal check --framework openai-agents --agent myapp.agent:build \
   --effect myapp.payments:charge --context '{"order_id": "order-42"}'
 ```
@@ -132,11 +143,11 @@ Each scenario sets `AS_SCENARIO` to a unique path. If your effect writes to a lo
 ## Upload runs (Signal Pro)
 
 ```bash
-export AGENTSIGNAL_API_KEY=...   # create one at https://tryagentsignal.com/pro/keys
+export AGENTSIGNAL_API_KEY=...   # Upload needs a Signal Pro API key: https://tryagentsignal.com/pro/keys
 agentsignal check --graph app:build --effect app.tools:charge --json --upload
 ```
 
-Prints the `run_id` and a free fix link (detector, status, url) for every failing detector (the CLI's own link table, never a Pro template). `repo` and `commit_sha` are filled from `GITHUB_REPOSITORY`/`GITHUB_SHA` or your git checkout. Upload errors (bad key, too large, rate limit, network) are reported but don't change the exit code unless you pass `--upload-strict` (exit 3). Without a key, `--upload` only prints a one-line hint.
+Prints the `run_id` and a free fix link (detector, status, url) for every failing detector (the CLI's own link table, never a Pro template). `repo` and `commit_sha` are filled from `GITHUB_REPOSITORY`/`GITHUB_SHA` or your git checkout. Upload errors (bad key, too large, rate limit, network) are reported but don't change the exit code unless you pass `--upload-strict` (exit 3). Without a key, `--upload` only prints a one-line hint: `Upload needs a Signal Pro API key: https://tryagentsignal.com/pro/keys` (a Pro page; every fix link the CLI prints is a free page).
 
 ## Fixing failures
 Every FAIL in the report links to a free fix page (guide or template) on [tryagentsignal.com](https://tryagentsignal.com). Want it done for you? Use the [$79 Fix](https://tryagentsignal.com/fix).

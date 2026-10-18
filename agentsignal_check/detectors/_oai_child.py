@@ -3,9 +3,18 @@ RunState.to_json() written to a file, exactly like an app persisting a paused ru
 import asyncio, inspect, json, os, sys
 mode, agent_spec, effects, state_path, ctx = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], json.loads(sys.argv[5])
 LEDGER, CRASH_AT = os.environ["AS_LEDGER"], int(os.environ.get("AS_CRASH_AT", "0"))
-from _effects import install, load   # sibling module (this script's dir is sys.path[0]); awaits async effects
-
+# Run as a script, sys.path[0] is this file's directory. Drop it so the user's own modules (an `_effects.py`,
+# ...) are never shadowed by ours, and import the helper by its full package name (board 53 F2).
+_here = os.path.dirname(os.path.abspath(__file__))
+sys.path[:] = [p for p in sys.path if os.path.abspath(p or ".") != _here]
 sys.path.insert(0, os.getcwd())
+try:
+    from agentsignal_check.detectors._effects import install, load   # awaits async effects
+except ImportError:          # running from a source tree that isn't installed: add the package root only for this import
+    sys.path.insert(0, os.path.dirname(os.path.dirname(_here)))
+    from agentsignal_check.detectors._effects import install, load
+    del sys.path[0]
+
 install(effects, LEDGER, CRASH_AT)
 from agents import Runner, RunConfig, RunState
 amod, aname = load(agent_spec)

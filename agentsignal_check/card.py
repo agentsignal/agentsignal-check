@@ -55,7 +55,8 @@ def build_renderable(report, target):
         t.add_row("", Text(why, style="dim"))
         if r["status"] != "PASS":
             t.add_row("", Text(_short(r["detail"]), style="#ff9b9b" if r["status"] == "FAIL" else "yellow"))
-            t.add_row("", Text(f"fix → {_disp(url)}", style="cyan"))
+            if r["status"] != "SKIP":      # a skipped test has nothing to fix
+                t.add_row("", Text(f"fix → {_disp(url)}", style="cyan"))
             fails.append(r)
     from .env import footer
     foot = Text(TAGLINE.replace("LangGraph", _fw(report)), style="dim italic")
@@ -96,7 +97,7 @@ def print_card(report, target, file=None):
         for r in report["results"]:
             name, why, _ = META.get(r["detector"], (r["detector"], "", SITE)); url = fix_url(r["detector"], report.get("framework"))
             print(f"[{r['status']}] {r['detector']}: {r['detail']}", file=f)
-            if r["status"] != "PASS":
+            if r["status"] not in ("PASS", "SKIP"):
                 print(f"    fix: {url}", file=f)
         return
     Console(file=f, width=80).print(build_renderable(report, target))
@@ -132,7 +133,8 @@ def render_html(report, target, run_at=""):
     rows = []
     for r in report["results"]:
         name, why, _ = META.get(r["detector"], (r["detector"], "", SITE)); url = fix_url(r["detector"], report.get("framework"))
-        extra = "" if r["status"] == "PASS" else f'<div class="detail">{e(_short(r["detail"], 200))}</div><div class="fix"><a href="{url}">fix → {e(_disp(url))}</a></div>'
+        fix = "" if r["status"] == "SKIP" else f'<div class="fix"><a href="{url}">fix → {e(_disp(url))}</a></div>'
+        extra = "" if r["status"] == "PASS" else f'<div class="detail">{e(_short(r["detail"], 200))}</div>{fix}'
         rows.append(f'<div class="row"><div class="st {r["status"]}">{SYM.get(r["status"],"?")} {r["status"]}</div>'
                     f'<div><div class="name">{e(name)} <span class="why">· {e(r["detector"])}</span></div><div class="why">{e(why)}</div>{extra}</div></div>')
     title = f"Approval flow: {grade} crash tests survived · agentsignal check"

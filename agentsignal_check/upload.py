@@ -3,8 +3,8 @@ import json, os, re, subprocess, sys, urllib.request, urllib.error
 
 DEFAULT_URL = "https://tryagentsignal.com/api/check/runs/"
 MAX_BYTES = 256 * 1024
-NO_KEY_HINT = ("agentsignal: --upload skipped: AGENTSIGNAL_API_KEY is not set "
-               "(create a key at https://tryagentsignal.com/pro/keys)")
+NO_KEY_HINT = ("agentsignal: --upload skipped: AGENTSIGNAL_API_KEY is not set. "
+               "Upload needs a Signal Pro API key: https://tryagentsignal.com/pro/keys")
 
 
 STATUSES = ("PASS", "FAIL", "ERROR", "SKIP")

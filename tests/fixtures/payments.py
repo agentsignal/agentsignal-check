@@ -9,4 +9,7 @@ def charge(amount, idempotency_key=None):
         return db["keys"][idempotency_key]
     db["n"] += 1; cid = f"ch_{db['n']}"
     if idempotency_key: db["keys"][idempotency_key] = cid
-    json.dump(db, open(p, "w")); return cid
+    tmp = f"{p}.{os.getpid()}.tmp"           # atomic: a hard kill mid-write never leaves a torn file
+    with open(tmp, "w") as fh:
+        json.dump(db, fh); fh.flush(); os.fsync(fh.fileno())
+    os.replace(tmp, p); return cid

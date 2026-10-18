@@ -131,7 +131,7 @@ def test_header_shows_project_pin(tmp_path):
     r, out, fw = _scan_out(tmp_path, {"requirements.txt": "langgraph==1.2.15\n"})
     head = out.splitlines()[0]
     assert head.endswith("detected: langgraph 1.2.15 (requirements.txt)"), head
-    assert fw == {"files": 1, "version": "1.2.15", "spec": None, "source": os.path.relpath(tmp_path / "requirements.txt")}
+    assert fw == {"files": 1, "version": "1.2.15", "spec": None, "source": "requirements.txt"}   # relative to the scan root
     # consistent with the version-aware rules' own wording
     assert any("langgraph 1.2.15 (requirements.txt) is affected" in f.message for f in r["_findings"])
 

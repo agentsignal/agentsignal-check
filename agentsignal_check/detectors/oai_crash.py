@@ -11,7 +11,7 @@ with RunState.from_json() in a fresh process. Detectors:
 A duplicate = same call args producing DISTINCT results (same result = deduped by an idempotency key).
 """
 import json, os, subprocess, sys, tempfile
-from .langgraph_crash import _dups, _inflight, INFLIGHT_NOTE, run_child, last_json, err_tail
+from .langgraph_crash import _dups, _inflight, INFLIGHT_NOTE, run_child, last_json, err_tail, exit_desc, failed
 
 CHILD = os.path.join(os.path.dirname(__file__), "_oai_child.py")
 
@@ -34,7 +34,8 @@ def run(agent, effects, ctx):
         st, led = f"{d}/base.json", f"{d}/base.ledger"
         r = _child("full", agent, effects, st, led, ctx)
         if r.returncode != 0:
-            return {"framework": "openai-agents", "results": [{"detector": "baseline", "status": "ERROR", "detail": r.stderr[-800:]}]}
+            return {"framework": "openai-agents", "results": [{"detector": "baseline", "status": "ERROR",
+                    "detail": (r.stderr or "").strip()[-800:] or failed(r, "baseline run failed")}]}
         dups, n = _dups(led)
         results.append({"detector": "baseline", "status": "FAIL" if dups else "PASS",
                         "detail": f"{n} effect call(s) in a clean run" + (f"; duplicates {dups}" if dups else "")})
@@ -43,16 +44,16 @@ def run(agent, effects, ctx):
             st, led = f"{d}/c{k}.json", f"{d}/c{k}.ledger"
             s0 = _child("start", agent, effects, st, led, ctx)
             if s0.returncode:
-                worst.append(f"crash@{k}: start failed: {_err(s0)}"); continue
+                worst.append(f"crash@{k}: {failed(s0, 'start failed')}"); continue
             r1 = _child("resume", agent, effects, st, led, ctx, crash_at=k)
             if r1.returncode != 137:
-                worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})"
+                worst.append(f"crash@{k}: child did not crash ({exit_desc(r1.returncode)})"
                              + (f": {_err(r1)}" if r1.returncode else "")); continue
             r2 = _child("resume", agent, effects, st, led, ctx)
             dups, _ = _dups(led)
             if dups: worst.append(f"crash after effect #{k} -> re-executed {dups}")
             elif _inflight(led): notes.append(f"crash@{k}: {INFLIGHT_NOTE}")   # clean refusal: no duplicate observed
-            elif r2.returncode != 0: worst.append(f"crash@{k}: resume failed: {_err(r2)}")
+            elif r2.returncode != 0: worst.append(f"crash@{k}: {failed(r2, 'resume failed')}")
         results.append({"detector": "double_execution.kill_resume",
                         "status": "FAIL" if any("re-executed" in w for w in worst) else ("PASS" if not worst else "WARN"),
                         "detail": "; ".join(worst + notes) or f"no duplicates across {n} crash point(s) (resumed from RunState.from_json)"})
@@ -88,14 +89,17 @@ def run(agent, effects, ctx):
         st, led = f"{d}/rep.json", f"{d}/rep.ledger"
         s1 = _child("start", agent, effects, st, led, ctx)
         if s1.returncode:
-            results.append({"detector": "approval.replay", "status": "ERROR", "detail": f"start failed: {_err(s1)}"})
+            results.append({"detector": "approval.replay", "status": "ERROR", "detail": failed(s1, "start failed")})
+        elif isinstance(_last(s1), dict) and not _last(s1).get("interruptions"):
+            results.append({"detector": "approval.replay", "status": "SKIP",
+                            "detail": "agent never paused for approval, so there was no approval to deliver twice"})
         else:
             snap = open(st).read()
             r1 = _child("resume", agent, effects, st, led, ctx)
             open(st, "w").write(snap)                     # second worker got the same snapshot
             r2 = _child("resume", agent, effects, st, led, ctx)
             if r1.returncode or r2.returncode:
-                results.append({"detector": "approval.replay", "status": "ERROR", "detail": _err(r1 if r1.returncode else r2)})
+                results.append({"detector": "approval.replay", "status": "ERROR", "detail": failed(r1 if r1.returncode else r2, "resume failed")})
             else:
                 dups, _ = _dups(led)
                 results.append({"detector": "approval.replay", "status": "FAIL" if dups else "PASS",

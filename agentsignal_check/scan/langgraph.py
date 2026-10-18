@@ -390,7 +390,7 @@ def _version_severity(fctx):
         return None
     if v.status == "affected":
         return "high", f"{v.describe()} is affected; {FIX_NOTE}"
-    return "medium", (f"{v.describe()} may be affected; " if (v.version or v.spec) else "") + FIX_NOTE
+    return "medium", (f"{v.describe()} may be affected; " if v.source else "") + FIX_NOTE
 
 
 def version_rules(fctx, clf, reported):

@@ -18,12 +18,24 @@ CLAUSE_RE = re.compile(r"(===|==|~=|!=|>=|<=|>|<)\s*([0-9][0-9A-Za-z.*+!-]*)")
 class LgVersion:
     status: str                 # affected | fixed | unknown
     version: str | None = None  # exact version when pinned / resolved
-    spec: str | None = None     # requirement spec when only a range is known
+    spec: str | None = None     # requirement spec when only a range is known (None for a bare `langgraph`)
     source: str | None = None   # file it came from
 
+    @property
+    def what(self):
+        """'1.2.15', '>=1.0', 'unpinned' (listed with no version constraint) or 'version unknown' (not listed)."""
+        return self.version or self.spec or ("unpinned" if self.source else "version unknown")
+
     def describe(self):
-        what = self.version or self.spec or "?"
-        return f"langgraph {what}" + (f" ({os.path.basename(self.source)})" if self.source else "")
+        return f"langgraph {self.what}" + (f" ({os.path.basename(self.source)})" if self.source else "")
+
+
+def _spec_or_unpinned(spec, path):
+    """A requirement with no version constraint (`langgraph`, `langgraph = "*"`) is 'unpinned': spec None."""
+    spec = (spec or "").strip()
+    if spec in ("", "*"):
+        return LgVersion("unknown", spec=None, source=path)
+    return LgVersion(classify_spec(spec), spec=spec, source=path)
 
 
 def parse_ver(s):
@@ -100,7 +112,7 @@ def _from_req_lines(lines, path):
             exact = re.fullmatch(r"===?\s*([0-9][0-9A-Za-z.+!-]*)", spec.replace(" ", ""))
             if exact:
                 return LgVersion(classify_exact(exact.group(1)), version=exact.group(1), source=path)
-            return LgVersion(classify_spec(spec), spec=spec or "any", source=path)
+            return _spec_or_unpinned(spec, path)
     return None
 
 
@@ -138,7 +150,7 @@ def _from_pyproject(path):
                 return LgVersion(classify_exact(spec), version=spec, source=path)
             if spec.startswith("^"):
                 spec = f">={spec[1:]}"
-            return LgVersion(classify_spec(spec), spec=spec or "any", source=path)
+            return _spec_or_unpinned(spec, path)
     return None
 
 

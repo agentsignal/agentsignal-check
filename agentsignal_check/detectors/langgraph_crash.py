@@ -9,7 +9,7 @@ Also: resume the same pending interrupt twice (double-click / retry) and check
 for duplicates (APPROVAL_REPLAY), and check a pending approval survives a
 process restart (LOST_APPROVAL).
 """
-import json, os, subprocess, sys, tempfile, collections
+import json, os, signal, subprocess, sys, tempfile, collections
 
 CHILD = os.path.join(os.path.dirname(__file__), "_lg_child.py")
 
@@ -45,9 +45,28 @@ def last_json(r):
     return None
 
 
+def exit_desc(rc):
+    """'rc=3', or 'rc=-11 SIGSEGV' for a child killed by a signal."""
+    if rc is not None and rc < 0:
+        try:
+            return f"rc={rc} {signal.Signals(-rc).name}"
+        except ValueError:
+            return f"rc={rc} signal {-rc}"
+    return f"rc={rc}"
+
+
 def err_tail(r, n=300):
+    """Last non-empty stderr line, or what happened when the child printed nothing (exit code / signal)."""
     lines = [l for l in (r.stderr or "").strip().splitlines() if l.strip()]
-    return (lines[-1] if lines else f"exit code {r.returncode}, no error output")[-n:]
+    if not lines:
+        how = "killed by a signal" if (r.returncode or 0) < 0 else "exited"
+        return f"child {how} ({exit_desc(r.returncode)}) with no error output"
+    return lines[-1][-n:]
+
+
+def failed(r, what):
+    """'<what> (rc=..): <last error line>' -- never an empty detail (board 53 nit)."""
+    return f"{what} ({exit_desc(r.returncode)}): {err_tail(r)}"
 
 
 def _child(mode, graph, effects, db, ledger, inp, resume, crash_at=0, put_crash_at=0, put_log=""):
@@ -74,6 +93,33 @@ def _inflight(ledger):
     p = ledger + ".inflight"
     return os.path.exists(p) and os.path.getsize(p) > 0
 
+def kill_before_checkpoint(graph, effects, inp, resume, nput, d, tag="p"):
+    """One kill_before_checkpoint pass over checkpoint puts 1..nput (scratch files in directory d).
+    Deterministic: for put #k the child saves the pending writes, drops checkpoint #k, lets the next superstep
+    run (as it does while an async checkpoint write is in flight) and dies at the next put() -- CrashSaver in
+    _lg_child.py. Then a fresh process resumes the thread and the ledger is checked for re-executed effects."""
+    bad, warn, pnotes = [], [], []
+    for k in range(1, nput + 1):
+        db, led = f"{d}/{tag}{k}.db", f"{d}/{tag}{k}.ledger"
+        r1 = _child("full", graph, effects, db, led, inp, resume, put_crash_at=k)
+        if r1.returncode == 0:
+            continue  # run finished before reaching put #k (e.g. paused) -- nothing to test
+        if r1.returncode != 137:      # the child errored / crashed / timed out: never silently skip it
+            warn.append(f"put#{k}: {failed(r1, 'child failed')}")
+            continue
+        r2 = _child("resume", graph, effects, db, led, inp, resume)
+        dups, _ = _dups(led)
+        if dups:
+            bad.append(f"crash before checkpoint #{k} -> re-executed {dups}")
+        elif _inflight(led):          # clean refusal: no duplicate observed
+            pnotes.append(f"put#{k}: {INFLIGHT_NOTE}")
+        elif r2.returncode != 0:
+            warn.append(f"put#{k}: {failed(r2, 'resume failed')}")
+    return {"detector": "double_execution.kill_before_checkpoint",
+            "status": "FAIL" if bad else ("WARN" if warn else "PASS"),
+            "detail": "; ".join(bad + warn + pnotes) or f"no duplicates across {nput} checkpoint write(s)"}
+
+
 def run(graph, effects, inp, resume, multi="each"):
     """multi: how several pending interrupts are answered -- "each" (one at a time, by interrupt id) or "map"."""
     if multi not in ("each", "map", "scalar"):   # "scalar": v0.3.2 behaviour, kept only to regression-test it
@@ -86,7 +132,8 @@ def run(graph, effects, inp, resume, multi="each"):
         plog = f"{d}/base.puts"
         r = _child("full", graph, effects, db, led, inp, resume, put_log=plog)
         if r.returncode != 0:
-            return {"results": [{"detector": "baseline", "status": "ERROR", "detail": r.stderr[-800:]}]}
+            return {"results": [{"detector": "baseline", "status": "ERROR",
+                                 "detail": (r.stderr or "").strip()[-800:] or failed(r, "baseline run failed")}]}
         dups, n = _dups(led)
         results.append({"detector": "baseline", "status": "FAIL" if dups else "PASS",
                         "detail": f"{n} effect call(s) in a clean run" + (f"; duplicates {dups}" if dups else "")})
@@ -96,7 +143,7 @@ def run(graph, effects, inp, resume, multi="each"):
             db, led = f"{d}/c{k}.db", f"{d}/c{k}.ledger"
             r1 = _child("full", graph, effects, db, led, inp, resume, crash_at=k)
             if r1.returncode != 137:
-                worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})"
+                worst.append(f"crash@{k}: child did not crash ({exit_desc(r1.returncode)})"
                              + (f": {err_tail(r1)}" if r1.returncode else ""))
                 continue
             r2 = _child("resume", graph, effects, db, led, inp, resume)
@@ -106,43 +153,28 @@ def run(graph, effects, inp, resume, multi="each"):
             elif _inflight(led):          # clean refusal: no duplicate observed
                 notes.append(f"crash@{k}: {INFLIGHT_NOTE}")
             elif r2.returncode != 0:
-                worst.append(f"crash@{k}: resume failed: {r2.stderr.strip().splitlines()[-1:]}")
+                worst.append(f"crash@{k}: {failed(r2, 'resume failed')}")
         results.append({"detector": "double_execution.kill_resume",
                         "status": "FAIL" if any("re-executed" in w for w in worst) else ("PASS" if not worst else "WARN"),
                         "detail": "; ".join(worst + notes) or f"no duplicates across {n} crash point(s)"})
         # kill BEFORE each checkpoint write (LangGraph #8039: put_writes vs put ordering)
         nput = sum(1 for _ in open(plog)) if os.path.exists(plog) else 0
-        bad, warn, pnotes = [], [], []
-        for k in range(1, nput + 1):
-            db, led = f"{d}/p{k}.db", f"{d}/p{k}.ledger"
-            r1 = _child("full", graph, effects, db, led, inp, resume, put_crash_at=k)
-            if r1.returncode == 0:
-                continue  # run finished before reaching put #k (e.g. paused) -- nothing to test
-            if r1.returncode != 137:      # the child errored / crashed / timed out: never silently skip it
-                warn.append(f"put#{k}: child failed (rc={r1.returncode}): {err_tail(r1)}")
-                continue
-            r2 = _child("resume", graph, effects, db, led, inp, resume)
-            dups, _ = _dups(led)
-            if dups:
-                bad.append(f"crash before checkpoint #{k} -> re-executed {dups}")
-            elif _inflight(led):          # clean refusal: no duplicate observed
-                pnotes.append(f"put#{k}: {INFLIGHT_NOTE}")
-            elif r2.returncode != 0:
-                warn.append(f"put#{k}: resume failed: {r2.stderr.strip().splitlines()[-1:]}")
-        results.append({"detector": "double_execution.kill_before_checkpoint",
-                        "status": "FAIL" if bad else ("WARN" if warn else "PASS"),
-                        "detail": "; ".join(bad + warn + pnotes) or f"no duplicates across {nput} checkpoint write(s)"})
+        results.append(kill_before_checkpoint(graph, effects, inp, resume, nput, d))
         # approval replay + lost approval
         db, led = f"{d}/rep.db", f"{d}/rep.ledger"
         r = _child("replay", graph, effects, db, led, inp, resume)
         info = last_json(r) if r.returncode == 0 else None
         if r.returncode != 0 or not isinstance(info, dict) or "had_interrupt" not in info:
-            detail = r.stderr[-400:] if r.returncode else "replay child printed no result line"
+            detail = failed(r, "replay child failed") if r.returncode else "replay child printed no result line"
+            # both rows come from this one child: report both, never drop one silently
+            results.append({"detector": "approval.lost_on_restart", "status": "ERROR", "detail": f"not tested: {detail}"})
             results.append({"detector": "approval.replay", "status": "ERROR", "detail": detail})
         else:
             dups, _ = _dups(led)
             if not info["had_interrupt"]:
                 results.append({"detector": "approval.lost_on_restart", "status": "SKIP", "detail": "graph never interrupted"})
+                results.append({"detector": "approval.replay", "status": "SKIP",
+                                "detail": "graph never interrupted, so there was no approval to deliver twice"})
             else:
                 results.append({"detector": "approval.lost_on_restart",
                                 "status": "PASS" if info["pending_after_restart"] else "FAIL",

@@ -302,40 +302,60 @@ def display_path(root_arg, rel):
     return rel if r in ("", ".") else f"{r}/{rel}"
 
 
-def _src_label(path):
+def _src_label(path, root="."):
+    """Pin file path relative to the scan root (a file root: its directory), '/'-separated, so JSON and the
+    header agree whatever directory the scan was started from."""
+    base = os.path.abspath(root)
+    if os.path.isfile(base):
+        base = os.path.dirname(base)
     try:
-        return os.path.relpath(path)
+        return os.path.relpath(path, base).replace(os.sep, "/")
     except ValueError:      # pragma: no cover (other drive on Windows)
         return path
 
 
-def project_versions(lg_paths):
+def project_versions(lg_paths, root="."):
     """frameworks[...] version info. langgraph: the project-resolved version of the scanned files, found with
     the same lookup AS106-AS108 use (nearest uv.lock > requirements*.txt > pyproject.toml, up to the repo root).
-    With no pin or lockfile it says "version unknown (no pin found)" (version/source null); the version installed
-    next to the scanner is never shown. openai-agents has no project lookup yet, so no version is claimed for it."""
+    With no pin or lockfile it says "version unknown (no pin found)" (version/source null); a bare `langgraph`
+    requirement says "unpinned" (version/spec null, source = that file); the version installed next to the
+    scanner is never shown. openai-agents has no project lookup yet, so no version is claimed for it."""
     from . import versions
     out = {}
     if lg_paths:
         groups = {}
         for ap in lg_paths:
             v = versions.langgraph_version(ap)
-            key = (v.version, v.spec, v.source) if (v.version or v.spec) else None
+            key = (v.version, v.spec, v.source) if v.source else None
             groups.setdefault(key, [v, 0])[1] += 1
         entries = []
         for key, (v, n) in sorted(groups.items(), key=lambda kv: (-kv[1][1], str(kv[0]))):
             if key is None:     # no pin / lockfile: never substitute the scanner's own install
                 entries.append({"version": None, "spec": None, "source": None,
-                                "label": "version unknown (no pin found)", "files": n})
+                                "label": "version unknown (no pin found)", "what": None, "files": n})
             else:
-                entries.append({"version": v.version, "spec": v.spec, "source": _src_label(v.source),
-                                "base": os.path.basename(v.source), "what": v.version or v.spec, "files": n})
-        for e in entries:
-            if e["source"] is not None:
-                src = e["base"] if sum(1 for x in entries if x["source"] is not None) == 1 else e["source"]
-                e["label"] = f"{e['what']} ({src})"
+                entries.append({"version": v.version, "spec": v.spec, "source": _src_label(v.source, root),
+                                "base": os.path.basename(v.source), "what": v.what, "files": n})
         out["langgraph"] = entries
     return out
+
+
+def version_label(entries, max_src=3):
+    """Header text: one item per distinct version, its pin files grouped (board 53 nit: no repeats)."""
+    pinned = [e for e in entries if e["source"] is not None]
+    by_what = {}
+    for e in pinned:
+        by_what.setdefault(e["what"], []).append(e)
+    parts = []
+    for what, es in by_what.items():
+        if len(pinned) == 1:
+            srcs = [es[0]["base"]]
+        else:
+            srcs = [e["source"] for e in es]
+        shown = ", ".join(srcs[:max_src]) + (f", +{len(srcs) - max_src} more" if len(srcs) > max_src else "")
+        parts.append(f"{what} ({shown})")
+    parts += [e["label"] for e in entries if e["source"] is None]
+    return ", ".join(parts)
 
 
 def scan(root, framework="auto", effect_names=(), excludes=(), include_tests=False, ignore_rules=()):
@@ -395,7 +415,7 @@ def scan(root, framework="auto", effect_names=(), excludes=(), include_tests=Fal
                 findings.append(f)
     findings.sort(key=lambda f: (f.file, f.line, f.col, f.rule))
     # Project versions only: the version installed next to the scanner is never reported as the project's.
-    proj = project_versions(lg_paths)
+    proj = project_versions(lg_paths, root)
     frameworks, labels = {}, {}
     for fw, n in sorted(fw_files.items()):
         if fw in proj:
@@ -403,7 +423,7 @@ def scan(root, framework="auto", effect_names=(), excludes=(), include_tests=Fal
             info = {"files": n, "version": top["version"], "spec": top["spec"], "source": top["source"]}
             if len(proj[fw]) > 1:
                 info["versions"] = [{k: e[k] for k in ("version", "spec", "source", "files")} for e in proj[fw]]
-            labels[fw] = f"{fw} " + ", ".join(e["label"] for e in proj[fw])
+            labels[fw] = f"{fw} " + version_label(proj[fw])
         else:       # openai-agents: no project lookup yet -> no version claimed
             info = {"files": n, "version": None, "spec": None, "source": None}
             labels[fw] = fw
@@ -485,6 +505,8 @@ GROUPS = [
     ("persist", ("approval may be lost on restart", "approvals may be lost on restart")),
     ("version", ("place hits a known langgraph bug for your version", "places hit known langgraph bugs for your version")),
 ]
+VERSION_RULES = ("AS106", "AS107", "AS108")
+VERSION_NOTE = "These langgraph bugs are fixed in 1.2.16; pin langgraph>=1.2.16."
 
 
 def _module_of(path):
@@ -524,6 +546,9 @@ def render_text(result, verbose=False):
             continue
         if gid == "rerun" and not any(f.confidence == "high" for f in gfs):
             one, many = one.replace(" will ", " may "), many.replace(" will ", " may ")
+        if gid == "version" and not all(f.confidence == "high" for f in gfs):
+            # the version isn't known to be affected (no pin, open range): it may hit them, not "hits" (C2)
+            one, many = "place may hit a known langgraph bug", "places may hit known langgraph bugs"
         k = len({(f.file, f.def_line, f.function) for f in gfs})
         out.append(f"{k} {one}:" if k == 1 else f"These {k} {many}:")
         for f in gfs:
@@ -537,6 +562,8 @@ def render_text(result, verbose=False):
                 out.append(f"{' ' * (len(num) + fn_w + 1)}{tail}".rstrip())
             else:
                 out.append(f"{num}{f.function:<{fn_w}} {loc:<{loc_w}} {tail}".rstrip())
+        if any(f.rule in VERSION_RULES for f in gfs):
+            out.append(f"  {VERSION_NOTE}")     # the pin note is cut from the column above; say it once here
         out.append("")
     hidden = len(result["_findings"]) - len(fs)
     tail = []

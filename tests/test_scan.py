@@ -354,7 +354,7 @@ def test_golden_terminal_and_json(capsys):
     lg = versions.langgraph_version(p)        # this repo's own pin (uv.lock), the same lookup as AS106-108
     sub = lambda t: (t.replace("{path}", p).replace("{lgver}", lg.version).replace("{fix}", FIX_URL)
                      .replace("{fixlabel}", FIX_LABEL)
-                     .replace("{lgsrc}", os.path.relpath(lg.source)))
+                     .replace("{lgsrc}", os.path.relpath(lg.source, os.path.dirname(os.path.abspath(p))).replace(os.sep, "/")))
     assert out == sub(open(os.path.join(SC, "golden", "naive_graph.txt")).read())
     _, out = cli_run(capsys, "--scan", p, "--format", "json")
     golden = json.loads(sub(open(os.path.join(SC, "golden", "naive_graph.json")).read()))
