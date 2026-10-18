@@ -20,6 +20,54 @@ agentsignal check --graph myapp.graph:build --effect myapp.payments:charge \
 - `--report FILE`: writes a markdown report with fixes. `--json` prints machine-readable output.
 - Exit code 1 on any FAIL, so you can use it as a CI gate.
 
+## Static scan (`--scan`)
+Find the pattern in your own code in seconds, before you wire up a crash test. `--scan` reads your files with Python's `ast` module. It never imports or runs your code and makes no network calls, so it's cheap enough to run on every PR.
+
+```bash
+agentsignal check --scan ./my_agent                # terminal output
+agentsignal check --scan ./my_agent --format json  # or --json
+```
+
+```
+agentsignal scan  ./my_agent  (langgraph 1.2.16, openai-agents 0.24.0 detected)
+
+These 2 tools will re-run on resume:
+  1. pay            my_agent/graph.py:9    payments.charge() runs before interrupt() at :10     AS101 high
+  2. charge         my_agent/tools.py:22   approved tool has no idempotency key                 AS201 high
+
+Prove it on your code (60s): agentsignal check --graph my_agent.graph:build --effect my_agent.payments:charge
+2 tools will re-run on resume. Fix (free, copy-paste): https://tryagentsignal.com/templates/side-effect-ledger/
+```
+
+Each finding gives `file:line`, the function, a one-line message, the rule id and its confidence. Every result ends with the count of tools that will re-run on resume and the fix link.
+
+| Rule | Framework | Confidence | Flags |
+|---|---|---|---|
+| AS101 | LangGraph | high | a side-effecting call before `interrupt()` in the same node (the node re-runs from the top on resume) |
+| AS102 | LangGraph | high | a side effect and `interrupt()` in the same loop |
+| AS103 | LangGraph | medium | a node or tool that runs after an approval and calls an effect with no idempotency key |
+| AS104 | LangGraph | medium | the same, with no ledger lookup or `if state.get(<id>)` guard before the effect |
+| AS105 | LangGraph | medium | `Command(resume=...)` in a web handler or queue consumer with no processed-id, state or lock check |
+| AS201 | OpenAI Agents | high | `@function_tool(needs_approval=...)` whose effect has no idempotency key |
+| AS202 | OpenAI Agents | medium | the same for a tool without `needs_approval` |
+| AS203 | OpenAI Agents | medium | `RunState.from_json/from_string` + approve/run in a handler with no processed-id check |
+| AS204 | OpenAI Agents | low | approval tools whose RunState is never saved with `to_json()`/`to_string()` (shown with `--verbose`/`--json`) |
+
+Idempotency evidence: a kwarg named `idempotency_key`, `idempotencyKey`, `request_id`, `dedupe_key` or `client_token`; a `key=` built from a run, thread, call or tool-call id (or a stable hash of one); an `Idempotency-Key` header; or a `@ledger`, `@once`, `@idempotent` or `@side_effect_ledger` decorator. A key from `uuid4()`, `time.time()` or `random` is flagged as "key is random per call".
+
+- **Exit code:** 1 if there's any high finding, otherwise 0 (`--strict` also fails on medium). 2 on a usage error. Files that don't parse are listed as skipped and never fail the scan.
+- **Options:** `--framework auto|langgraph|openai-agents`, `--effect-names payments.charge,notify` (extra effect callees), `--exclude GLOB` (repeatable), `--include-tests` (test files are skipped by default), `--verbose`. `.venv`, `venv`, `node_modules`, `site-packages`, `.git`, `build` and `dist` are always skipped. Google ADK and Vercel AI SDK files are not scanned yet.
+- **Suppress:** `# agentsignal: ignore[AS101]` (or a bare `# agentsignal: ignore`) on the call or `def` line, or in `pyproject.toml`:
+  ```toml
+  [tool.agentsignal.scan]
+  ignore = ["AS202"]
+  effect_names = ["payments.charge"]
+  exclude = ["scripts/*"]
+  ```
+  Suppressed findings are counted in the output.
+- `--scan PATH --graph ...` (or `--agent ...`) scans first and then runs the crash test; with `--json` the scan lands under `"scan"` in the report. `--upload` doesn't send the scan.
+- A static scan can't see runtime behavior. A clean scan means "no re-run risks found by static scan", not "safe"; the crash test is what proves it.
+
 ## Report card, HTML, OG image, badge
 ```bash
 agentsignal check --graph myapp.graph:build --effect myapp.payments:charge \

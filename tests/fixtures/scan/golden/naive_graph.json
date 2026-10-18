@@ -1,0 +1,33 @@
+{
+  "scan": {
+    "files": 1,
+    "frameworks": {
+      "langgraph": {
+        "files": 1,
+        "version": "X.Y.Z"
+      }
+    },
+    "findings": [
+      {
+        "rule": "AS101",
+        "severity": "high",
+        "confidence": "high",
+        "framework": "langgraph",
+        "function": "pay",
+        "file": "{path}",
+        "line": 9,
+        "col": 10,
+        "effect_call": "payments.charge()",
+        "effect_line": 9,
+        "message": "`pay()` calls `payments.charge()` before `interrupt()` at L10; LangGraph re-runs the whole node on resume, so `payments.charge` (L9) runs again.",
+        "fix_url": "https://tryagentsignal.com/templates/side-effect-ledger/"
+      }
+    ],
+    "suppressed": 0,
+    "skipped": [],
+    "config": null,
+    "rerun_tools": 1,
+    "summary": "1 tool will re-run on resume. Fix (free, copy-paste): https://tryagentsignal.com/templates/side-effect-ledger/",
+    "fix_url": "https://tryagentsignal.com/templates/side-effect-ledger/"
+  }
+}

@@ -1,0 +1,3 @@
+[tool.agentsignal.scan]
+ignore = ["AS101"]
+effect_names = ["ledgerless.record_sale"]

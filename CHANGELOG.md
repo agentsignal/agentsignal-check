@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- **Static scan:** `agentsignal check --scan PATH` finds side effects that re-run on resume, using Python's `ast` only (never imports or runs your code, no network). LangGraph rules AS101–AS105 (effect before `interrupt()`, effect in a loop with `interrupt()`, post-approval effect without an idempotency key, resume path without a ledger lookup, approval handler deliverable twice) and OpenAI Agents rules AS201–AS204 (approved tool without a key, tool without a key, RunState resumed twice in a handler, approval never persisted). A `key=` kwarg counts as idempotency evidence when it's built from a run, thread, call or tool-call id or a stable hash of one; random keys are flagged "key is random per call".
+- Output is `file:line`, function, one-line message, rule id and confidence, and every result ends with "N tools will re-run on resume" and the fix link https://tryagentsignal.com/templates/side-effect-ledger/. `--format json` (or `--json`) gives `{"scan": {...}}` with stable ordering.
+- Exit 1 on any high finding, 0 otherwise (`--strict` fails on medium too), 2 on usage error. Unparseable files are listed as skipped. `--effect-names`, `--exclude`, `--include-tests`, `--verbose`, inline `# agentsignal: ignore[...]` and `[tool.agentsignal.scan]` in pyproject.toml (suppressions are counted).
+- `--effect` is now required only for the crash test; `--scan` needs neither `--effect` nor `--graph`. `--scan` with `--graph/--agent` scans first, then runs the crash test.
+- Tests: `tests/test_scan.py` covers every rule, the board 53 acceptance fixtures, a precision corpus of the public templates (`tests/fixtures/scan/corpus/`), false-positive guards, suppression/config, skipped files, a no-import guard, golden terminal/JSON output, and a 2,000-file speed check.
+
 ## 0.3.2 (2026-10-16)
 - **Fix:** with `--framework openai-agents`, fix links in the terminal card, plain output, Markdown report and HTML report pointed at LangGraph templates. They now point at `/templates/openai-agents-idempotent-approval/` (double execution, replay) and `/templates/openai-agents-approval-resume/` (lost approval on restart), with OpenAI Agents wording in the Markdown report. LangGraph links are unchanged. Links live in one per-framework table (`agentsignal_check/links.py`).
 - Tests: `tests/test_fix_links.py` (per-framework mapping across all renderers; `AGENTSIGNAL_NET_TESTS=1` checks every URL returns 200).

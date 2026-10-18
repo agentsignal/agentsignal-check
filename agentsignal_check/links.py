@@ -30,3 +30,9 @@ def _fw(framework):
 
 def fix_url(detector, framework=None):
     return FIX_URLS[_fw(framework)].get(detector, f"{T}/")
+
+# Static scan (`agentsignal check --scan`): every finding points at the side-effect ledger fix (board 54).
+SCAN_FIX_URL = f"{T}/side-effect-ledger/"
+
+def scan_fix_url(rule=None, framework=None):
+    return SCAN_FIX_URL
