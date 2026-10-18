@@ -19,7 +19,7 @@ agentsignal check --graph myapp.graph:build --effect myapp.payments:charge \
 - `--resume JSON`: the value sent to every `interrupt()`. Default `true` (approve).
 - `--multi-interrupt each|map`: when several interrupts are pending (parallel approvals, subgraphs), answer them one at a time by interrupt id (`each`, default, like an approval UI) or all at once with an `{interrupt_id: value}` map (`map`).
 - `--report FILE`: writes a markdown report with fixes. `--json` prints machine-readable output.
-- Exit code 1 on any FAIL, so you can use it as a CI gate.
+- Exit code 1 on any FAIL, so you can use it as a CI gate. Exit 2 when nothing FAILed but part of the run errored (a detector ERROR/WARN, a child process that raised, crashed, timed out or never reached its crash point, or a driver error), so a broken run never passes. 0 only when every detector is PASS or SKIP. Child timeout: `AGENTSIGNAL_CHILD_TIMEOUT_S` (default 120).
 
 ## Static scan (`--scan`)
 Find the pattern in your own code in seconds, before you wire up a crash test. `--scan` reads your files with Python's `ast` module. It never imports or runs your code and makes no network calls, so it's cheap enough to run on every PR.
@@ -30,17 +30,19 @@ agentsignal check --scan ./my_agent --format json  # or --json
 ```
 
 ```
-agentsignal scan  ./my_agent  (langgraph 1.2.16, openai-agents 0.24.0 detected)
+agentsignal scan  ./my_agent  detected: langgraph 1.2.16 (requirements.txt), openai-agents
 
 These 2 tools will re-run on resume:
-  1. pay            my_agent/graph.py:9    payments.charge() runs before interrupt() at :10     AS101 high
-  2. charge         my_agent/tools.py:22   approved tool has no idempotency key                 AS201 high
+  1. pay            my_agent/graph.py:9    payments.charge() runs before interrupt() at :10 AS101 high
+  2. charge         my_agent/tools.py:22   approved tool has no idempotency key             AS201 high
 
 Prove it on your code (60s): agentsignal check --graph my_agent.graph:build --effect my_agent.payments:charge
-2 tools will re-run on resume. Fix (free, copy-paste): https://tryagentsignal.com/templates/side-effect-ledger/
+2 tools will re-run on resume. Fix (free guide): https://tryagentsignal.com/guides/duplicate-tool-calls-after-resume/
 ```
 
-Each finding gives `file:line`, the function, a one-line message, the rule id and its confidence. Every result ends with the count of tools that will re-run on resume and the fix link.
+Each finding gives `file:line`, the function, a one-line message, the rule id and its confidence (a path too long for its column goes on its own line, with the message below it). A result with findings ends with the count of tools that will re-run on resume ("may re-run" when every such finding is medium confidence) and the fix link. A clean scan ends with `No re-run risks found by static scan.` and no link. The "Prove it" line names `<module>:build` only when that file defines `build()`.
+
+The langgraph version in the header is your project's, from the same lookup the version-aware rules use (nearest `uv.lock`, `requirements*.txt` or `pyproject.toml`), with the file it came from. With no pin or lockfile it says `langgraph version unknown (no pin found)`; it never shows the version installed next to agentsignal. openai-agents is shown without a version (no project lookup yet). In `--json`, `scan.frameworks.<name>` has `version`, `spec` (a range, when there's no exact pin) and `source`; all `null` when unknown.
 
 | Rule | Framework | Confidence | Flags |
 |---|---|---|---|
@@ -134,7 +136,7 @@ export AGENTSIGNAL_API_KEY=...   # create one at https://tryagentsignal.com/pro/
 agentsignal check --graph app:build --effect app.tools:charge --json --upload
 ```
 
-Prints the `run_id` and a fix link (detector, status, url) for every failing detector. `repo` and `commit_sha` are filled from `GITHUB_REPOSITORY`/`GITHUB_SHA` or your git checkout. Upload errors (bad key, too large, rate limit, network) are reported but don't change the exit code unless you pass `--upload-strict` (exit 3). Without a key, `--upload` only prints a one-line hint.
+Prints the `run_id` and a free fix link (detector, status, url) for every failing detector (the CLI's own link table, never a Pro template). `repo` and `commit_sha` are filled from `GITHUB_REPOSITORY`/`GITHUB_SHA` or your git checkout. Upload errors (bad key, too large, rate limit, network) are reported but don't change the exit code unless you pass `--upload-strict` (exit 3). Without a key, `--upload` only prints a one-line hint.
 
 ## Fixing failures
 Every FAIL in the report links to a free tested pattern on [tryagentsignal.com](https://tryagentsignal.com). Want it done for you? Use the [$79 Fix](https://tryagentsignal.com/fix).

@@ -1,7 +1,7 @@
-agentsignal scan  {path}  (langgraph X.Y.Z detected)
+agentsignal scan  {path}  detected: langgraph {lgver} (uv.lock)
 
 1 tool will re-run on resume:
-  1. pay            {path}:9 payments.charge() runs before interrupt() at :10     AS101 high
+  1. pay            {path}:9 payments.charge() runs before interrupt() at :10 AS101 high
 
 Prove it on your code (60s): agentsignal check --graph tests.fixtures.naive_graph:build --effect tests.fixtures.payments:charge
-1 tool will re-run on resume. Fix (free, copy-paste): https://tryagentsignal.com/templates/side-effect-ledger/
+1 tool will re-run on resume. {fixlabel}: {fix}

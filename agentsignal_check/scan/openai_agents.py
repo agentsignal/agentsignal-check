@@ -57,10 +57,10 @@ def run(fctx, clf):
                 "RunState resumed with no processed-id check", group="handler"))
     # AS204: needs_approval tools + interruptions handled, but the state is never serialized
     if has_approval_tools:
-        handled = [n for n in ast.walk(fctx.tree) if (isinstance(n, ast.Attribute) and n.attr == "interruptions")
+        handled = [n for n in fctx.nodes if (isinstance(n, ast.Attribute) and n.attr == "interruptions")
                    or (isinstance(n, ast.Call) and last_name(n.func) == "get_interruptions")]
         persisted = any(isinstance(n, ast.Call) and last_name(n.func) in ("to_json", "to_string")
-                        for n in ast.walk(fctx.tree))
+                        for n in fctx.nodes)
         if handled and not persisted:
             first = min(handled, key=pos)
             fn = fctx.enclosing(first) or fctx.tree

@@ -197,7 +197,7 @@ def parallel_nodes(fctx, b):
 def subgraph_builders(fctx, builders):
     """Builders whose .compile() result is mounted as a node of another graph (a compiled subgraph)."""
     compiled_names, direct = {}, set()
-    for n in ast.walk(fctx.tree):
+    for n in fctx.nodes:
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "compile":
             recv = dotted(n.func.value)
             par = fctx.parent.get(n)
@@ -208,7 +208,7 @@ def subgraph_builders(fctx, builders):
                     if isinstance(t, ast.Name):
                         compiled_names[t.id] = recv
     mounted = set(direct)
-    for n in ast.walk(fctx.tree):
+    for n in fctx.nodes:
         if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "add_node":
             for a in n.args:
                 if isinstance(a, ast.Name) and a.id in compiled_names:
@@ -224,7 +224,7 @@ def _module_nodes(fctx):
         yield n
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
             continue
-        stack.extend(ast.iter_child_nodes(n))
+        stack.extend(fctx.kids[n])
 
 
 def _fn_interrupts(fctx, fn):
@@ -322,7 +322,7 @@ def run(fctx, clf):
         for fn in fctx.funcs:
             if "tool" in decorator_names(fn):
                 candidates.append((fn, None))
-        for n in ast.walk(fctx.tree):
+        for n in fctx.nodes:
             if isinstance(n, ast.Call) and last_name(n.func) == "ToolNode" and n.args and isinstance(n.args[0], (ast.List, ast.Tuple)):
                 for el in n.args[0].elts:
                     for fn in _resolve_node_fn(fctx, el, n):
@@ -420,7 +420,7 @@ def version_rules(fctx, clf, reported):
     multi = [fn for fn in fctx.funcs if len(_interrupts(fctx, fn)) >= 2
              or any(_loop_with_interrupt(fctx, fn, i, [i]) is not None for i in _interrupts(fctx, fn))]
     if multi:
-        for n in ast.walk(fctx.tree):
+        for n in fctx.nodes:
             if isinstance(n, ast.Call) and last_name(n.func) == "Command" and {"resume", "update"} <= {k.arg for k in n.keywords}:
                 sev = sev or _version_severity(fctx) or ("none", "")
                 if sev[0] == "none":
@@ -442,7 +442,7 @@ def version_rules(fctx, clf, reported):
                 total += loop_counts.get(id(fn)) or 1      # a loop-made node counts once per known iteration
         n_par = max(n_par, total)
     if n_par >= 3:
-        for n in ast.walk(fctx.tree):
+        for n in fctx.nodes:
             if isinstance(n, ast.Call) and any(k.arg == "durability" and str_value(k.value) == "exit" for k in n.keywords):
                 sev = sev or _version_severity(fctx) or ("none", "")
                 if sev[0] == "none":

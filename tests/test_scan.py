@@ -13,12 +13,7 @@ from agentsignal_check.scan import core
 HERE = os.path.dirname(os.path.abspath(__file__))
 FX = os.path.join(HERE, "fixtures")
 SC = os.path.join(FX, "scan")
-FIX_URL = "https://tryagentsignal.com/templates/side-effect-ledger/"
-
-
-@pytest.fixture(autouse=True)
-def _pin_versions(monkeypatch):
-    monkeypatch.setattr(core, "framework_versions", lambda: {"langgraph": "X.Y.Z", "openai-agents": "A.B.C"})
+from agentsignal_check.links import SCAN_FIX_URL as FIX_URL, SCAN_FIX_LABEL as FIX_LABEL
 
 
 def run(path, *extra):
@@ -227,7 +222,7 @@ def test_exclude_and_default_skip_dirs(tmp_path):
     assert run(str(tmp_path), ("excludes", ["pkg"]))[1] == []
 
 
-def test_2k_file_repo_under_5s(tmp_path):
+def test_2k_file_repo_under_3_5s(tmp_path):
     naive = open(os.path.join(FX, "naive_graph.py")).read()
     plain = "import os\n\ndef f(x):\n    return os.path.join(x, 'y')\n" * 20
     for i in range(2000):
@@ -238,7 +233,26 @@ def test_2k_file_repo_under_5s(tmp_path):
     r = core.scan(str(tmp_path))
     dt = time.perf_counter() - t
     assert r["files"] == 2000 and len(r["findings"]) == 100
-    assert dt < 5, dt
+    assert dt < 3.5, dt
+
+
+def test_2k_file_repo_of_real_framework_files_under_3_5s(tmp_path):
+    """Heavier than the synthetic one (Tester's setup): every file is a copy of a real fixture/corpus/scanner
+    file, so most of them import langgraph / agents and are fully parsed and checked."""
+    import glob, shutil
+    srcs = sorted(p for p in glob.glob(os.path.join(FX, "**", "*.py"), recursive=True)
+                  if "broken" not in p and "bad_syntax" not in p)
+    srcs += sorted(glob.glob(os.path.join(os.path.dirname(core.__file__), "..", "**", "*.py"), recursive=True))
+    (tmp_path / ".git").mkdir()
+    for i in range(2000):
+        d = tmp_path / f"pkg{i // 100}"
+        d.mkdir(exist_ok=True)
+        shutil.copy(srcs[i % len(srcs)], d / f"m{i}.py")
+    t = time.perf_counter()
+    r = core.scan(str(tmp_path))
+    dt = time.perf_counter() - t
+    assert r["files"] == 2000 and r["findings"]
+    assert dt < 3.5, dt
 
 
 # ---------------- CLI contract ----------------
@@ -267,23 +281,83 @@ def test_strict_makes_medium_fail(capsys):
 
 
 def test_every_result_ends_with_count_and_fix_link(capsys):
-    for p in (rel(FX, "naive_graph.py"), rel(FX, "oai_idem.py"), rel(SC, "corpus")):
+    for p in (rel(FX, "naive_graph.py"), rel(SC, "corpus")):
         _, out = cli_run(capsys, "--scan", p)
         last = out.rstrip("\n").splitlines()[-1]
-        assert last.endswith(f"will re-run on resume. Fix (free, copy-paste): {FIX_URL}"), last
-    _, out = cli_run(capsys, "--scan", rel(FX, "oai_idem.py"))
-    assert out.rstrip().splitlines()[-1].startswith("0 tools will re-run on resume.")
-    assert "No re-run risks found by static scan (1 file)" in out and "safe" not in out.lower()
+        assert last.endswith(f"will re-run on resume. {FIX_LABEL}: {FIX_URL}"), last
     _, out = cli_run(capsys, "--scan", rel(SC, "corpus"))
     assert "These 3 tools will re-run on resume:" in out and "3 tools will re-run on resume. Fix" in out
+
+
+def test_clean_scan_ends_with_no_risks_and_no_fix_link(capsys):
+    """Tester nit 1: a clean (or low-only) scan ends with the spec's line and carries no fix link."""
+    _, out = cli_run(capsys, "--scan", rel(FX, "oai_idem.py"))
+    lines = out.rstrip().splitlines()
+    assert lines[-1] == "No re-run risks found by static scan."
+    assert "1 file scanned." in out and FIX_URL not in out and "re-run on resume" not in out
+    assert "safe" not in out.lower()
+    d = json.loads(cli_run(capsys, "--scan", rel(FX, "oai_idem.py"), "--json")[1])["scan"]
+    assert d["summary"] == "No re-run risks found by static scan." and d["fix_url"] is None and d["rerun_tools"] == 0
+
+
+def test_low_only_scan_is_clean(capsys):
+    _, out = cli_run(capsys, "--scan", rel(SC, "as204_not_persisted.py"))
+    assert out.rstrip().splitlines()[-1] == "No re-run risks found by static scan."
+    assert "low-confidence finding hidden" in out and FIX_URL not in out
+
+
+def test_medium_only_says_may(capsys):
+    """Tester nit 1: medium-only results say 'may re-run', not 'will'."""
+    code, out = cli_run(capsys, "--scan", rel(FX, "safe_graph.py"))
+    assert code == 0
+    assert "1 tool may re-run on resume:" in out
+    assert out.rstrip().splitlines()[-1] == f"1 tool may re-run on resume. {FIX_LABEL}: {FIX_URL}"
+    assert " will re-run" not in out
+    d = json.loads(cli_run(capsys, "--scan", rel(FX, "safe_graph.py"), "--json")[1])["scan"]
+    assert d["summary"].startswith("1 tool may re-run on resume.") and d["fix_url"] == FIX_URL
+
+
+def test_prove_it_hint_only_names_build_when_it_exists(capsys):
+    """Tester nit 2: suggest <module>:build only when that file defines build()."""
+    _, out = cli_run(capsys, "--scan", rel(FX, "naive_graph.py"))
+    assert "--graph tests.fixtures.naive_graph:build " in out
+    for f, flag in (("random_key.py", "--agent"), ("suppressed.py", None), ("raises_on_import.py", None)):
+        _, out = cli_run(capsys, "--scan", rel(SC, f))
+        hint = [l for l in out.splitlines() if l.startswith("Prove it")]
+        if not hint:
+            continue
+        assert ":build" not in hint[0], hint[0]
+        assert "<module:function that returns your" in hint[0], hint[0]
+        if flag:
+            assert flag in hint[0]
+
+
+def test_long_paths_do_not_run_into_the_message(capsys):
+    """Tester nit 3: a path longer than its column goes on its own line; the message is wrapped below it."""
+    _, out = cli_run(capsys, "--scan", rel(SC, "corpus"))
+    rows = [l for l in out.splitlines() if l.startswith("  ") and ".py:" in l]
+    assert rows
+    for l in rows:
+        path = next(t for t in l.split() if ".py:" in t)
+        after = l.split(path, 1)[1]
+        assert after == "" or after.startswith(" "), l           # never glued to the message
+    lines = out.splitlines()
+    i = next(n for n, l in enumerate(lines) if "lg_idempotent_approval.py:27" in l)
+    assert lines[i].rstrip().endswith("lg_idempotent_approval.py:27")
+    assert "api.charge() runs before interrupt()" in lines[i + 1] and lines[i + 1].startswith(" " * 10)
 
 
 def test_golden_terminal_and_json(capsys):
     p = rel(FX, "naive_graph.py")
     _, out = cli_run(capsys, "--scan", p)
-    assert out == open(os.path.join(SC, "golden", "naive_graph.txt")).read().replace("{path}", p)
+    from agentsignal_check.scan import versions
+    lg = versions.langgraph_version(p)        # this repo's own pin (uv.lock), the same lookup as AS106-108
+    sub = lambda t: (t.replace("{path}", p).replace("{lgver}", lg.version).replace("{fix}", FIX_URL)
+                     .replace("{fixlabel}", FIX_LABEL)
+                     .replace("{lgsrc}", os.path.relpath(lg.source)))
+    assert out == sub(open(os.path.join(SC, "golden", "naive_graph.txt")).read())
     _, out = cli_run(capsys, "--scan", p, "--format", "json")
-    golden = json.loads(open(os.path.join(SC, "golden", "naive_graph.json")).read().replace("{path}", p))
+    golden = json.loads(sub(open(os.path.join(SC, "golden", "naive_graph.json")).read()))
     assert json.loads(out) == golden
 
 
