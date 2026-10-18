@@ -15,11 +15,46 @@ CHILD = os.path.join(os.path.dirname(__file__), "_lg_child.py")
 
 MULTI = {"mode": "each"}
 
+def child_timeout():
+    """Seconds one child process may run (AGENTSIGNAL_CHILD_TIMEOUT_S, default 120)."""
+    try:
+        return float(os.environ.get("AGENTSIGNAL_CHILD_TIMEOUT_S", "") or 120)
+    except ValueError:
+        return 120.0
+
+
+def run_child(cmd, env):
+    """subprocess.run that never raises on a hung child: a timeout becomes a failed result (rc 124) whose
+    stderr ends with a TimeoutError line, so every detector reports it (ERROR/WARN) and the CLI exits non-zero."""
+    t = child_timeout()
+    try:
+        return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=t)
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode(errors="replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+        err = e.stderr.decode(errors="replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        return subprocess.CompletedProcess(cmd, 124, out, err + f"\nTimeoutError: child process timed out after {t:g}s")
+
+
+def last_json(r):
+    """The last stdout line that parses as JSON (user code may print), else None."""
+    for line in reversed((r.stdout or "").strip().splitlines()):
+        try:
+            return json.loads(line)
+        except ValueError:
+            continue
+    return None
+
+
+def err_tail(r, n=300):
+    lines = [l for l in (r.stderr or "").strip().splitlines() if l.strip()]
+    return (lines[-1] if lines else f"exit code {r.returncode}, no error output")[-n:]
+
+
 def _child(mode, graph, effects, db, ledger, inp, resume, crash_at=0, put_crash_at=0, put_log=""):
     env = dict(os.environ, AS_LEDGER=ledger, AS_CRASH_AT=str(crash_at), AS_SCENARIO=db,
                AS_PUT_CRASH_AT=str(put_crash_at), AS_PUT_LOG=put_log, AS_MULTI_RESUME=MULTI["mode"])  # AS_SCENARIO: per-scenario scratch key for user stores
     cmd = [sys.executable, CHILD, mode, graph, json.dumps(effects), db, json.dumps(inp), json.dumps(resume)]
-    return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+    return run_child(cmd, env)
 
 def _dups(ledger):
     if not os.path.exists(ledger):
@@ -41,7 +76,7 @@ def _inflight(ledger):
 
 def run(graph, effects, inp, resume, multi="each"):
     """multi: how several pending interrupts are answered -- "each" (one at a time, by interrupt id) or "map"."""
-    if multi not in ("each", "map"):
+    if multi not in ("each", "map", "scalar"):   # "scalar": v0.3.2 behaviour, kept only to regression-test it
         raise ValueError("multi must be 'each' or 'map'")
     MULTI["mode"] = multi
     results = []
@@ -61,7 +96,8 @@ def run(graph, effects, inp, resume, multi="each"):
             db, led = f"{d}/c{k}.db", f"{d}/c{k}.ledger"
             r1 = _child("full", graph, effects, db, led, inp, resume, crash_at=k)
             if r1.returncode != 137:
-                worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})")
+                worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})"
+                             + (f": {err_tail(r1)}" if r1.returncode else ""))
                 continue
             r2 = _child("resume", graph, effects, db, led, inp, resume)
             dups, _ = _dups(led)
@@ -80,8 +116,11 @@ def run(graph, effects, inp, resume, multi="each"):
         for k in range(1, nput + 1):
             db, led = f"{d}/p{k}.db", f"{d}/p{k}.ledger"
             r1 = _child("full", graph, effects, db, led, inp, resume, put_crash_at=k)
-            if r1.returncode != 137:
+            if r1.returncode == 0:
                 continue  # run finished before reaching put #k (e.g. paused) -- nothing to test
+            if r1.returncode != 137:      # the child errored / crashed / timed out: never silently skip it
+                warn.append(f"put#{k}: child failed (rc={r1.returncode}): {err_tail(r1)}")
+                continue
             r2 = _child("resume", graph, effects, db, led, inp, resume)
             dups, _ = _dups(led)
             if dups:
@@ -96,11 +135,11 @@ def run(graph, effects, inp, resume, multi="each"):
         # approval replay + lost approval
         db, led = f"{d}/rep.db", f"{d}/rep.ledger"
         r = _child("replay", graph, effects, db, led, inp, resume)
-        out = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
-        if r.returncode != 0:
-            results.append({"detector": "approval.replay", "status": "ERROR", "detail": r.stderr[-400:]})
+        info = last_json(r) if r.returncode == 0 else None
+        if r.returncode != 0 or not isinstance(info, dict) or "had_interrupt" not in info:
+            detail = r.stderr[-400:] if r.returncode else "replay child printed no result line"
+            results.append({"detector": "approval.replay", "status": "ERROR", "detail": detail})
         else:
-            info = json.loads(out)
             dups, _ = _dups(led)
             if not info["had_interrupt"]:
                 results.append({"detector": "approval.lost_on_restart", "status": "SKIP", "detail": "graph never interrupted"})

@@ -1,36 +1,13 @@
-import functools, importlib, json, os, sys, sqlite3
+import json, os, sys, sqlite3
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 mode, graph_spec, effects, db, inp, resume = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], json.loads(sys.argv[5]), json.loads(sys.argv[6])
 LEDGER, CRASH_AT = os.environ["AS_LEDGER"], int(os.environ.get("AS_CRASH_AT", "0"))
-calls = 0
-
-def load(spec):
-    m, f = spec.split(":"); return importlib.import_module(m), f
-
-def wrap(spec):
-    mod, name = load(spec); orig = getattr(mod, name)
-    @functools.wraps(orig)
-    def w(*a, **k):
-        global calls
-        try:
-            res = orig(*a, **k)
-        except Exception as e:
-            if any(c.__name__ == "EffectInFlight" for c in type(e).__mro__):   # matched by name: no import dependency
-                with open(LEDGER + ".inflight", "a") as fh:
-                    fh.write(json.dumps([spec, repr(a), repr(sorted(k.items()))]) + "\n"); fh.flush(); os.fsync(fh.fileno())
-            raise
-        with open(LEDGER, "a") as fh:
-            fh.write(json.dumps([spec, repr(a), repr(sorted(k.items())), repr(res)]) + "\n"); fh.flush(); os.fsync(fh.fileno())
-        calls += 1
-        if CRASH_AT and calls == CRASH_AT:
-            os._exit(137)  # hard kill: no finally, no checkpoint flush
-        return res
-    setattr(mod, name, w)
+from _effects import install, load   # sibling module (this script's dir is sys.path[0]); awaits async effects
 
 sys.path.insert(0, os.getcwd())
-for e in effects: wrap(e)
+install(effects, LEDGER, CRASH_AT)
 gmod, gname = load(graph_spec)
 PUT_CRASH_AT = int(os.environ.get("AS_PUT_CRASH_AT", "0"))
 PUT_LOG = os.environ.get("AS_PUT_LOG")
@@ -65,6 +42,8 @@ def pending():
 def resume_cmd():
     """One pending interrupt: Command(resume=value). Several: LangGraph needs {interrupt_id: value}."""
     ints = pending()
+    if MULTI == "scalar":                     # v0.3.2 behaviour (regression tests only): LangGraph rejects it
+        return Command(resume=resume)         # when several interrupts are pending
     if len(ints) <= 1 or not all(getattr(i, "id", None) for i in ints):
         return Command(resume=resume)
     if MULTI == "map":
@@ -83,7 +62,13 @@ if mode == "full":
     drive(inp)
 elif mode == "resume":
     st = g.get_state(cfg)
-    drive(resume_cmd() if pending() else None) if st.next else None
+    # Unfinished = there is a next node OR the latest checkpoint still has tasks. Under LangGraph's default
+    # async durability a hard kill can land after a task's pending writes were saved but before the next
+    # checkpoint was: get_state() then reports next=() although the run never finished (the following node,
+    # e.g. the charge, never committed). invoke(None) applies those writes and continues, like any app
+    # resuming the thread. Checking `next` alone skipped the resume -> a random false PASS (board 54 X3).
+    if st.next or st.tasks:
+        drive(resume_cmd() if pending() else None)
 elif mode == "replay":
     g.invoke(inp, cfg)
     had = bool(g.get_state(cfg).interrupts)

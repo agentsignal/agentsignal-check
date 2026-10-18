@@ -1,35 +1,12 @@
 """Child process for the OpenAI Agents SDK detector. State crosses process boundaries ONLY as
 RunState.to_json() written to a file, exactly like an app persisting a paused run."""
-import asyncio, functools, importlib, inspect, json, os, sys
+import asyncio, inspect, json, os, sys
 mode, agent_spec, effects, state_path, ctx = sys.argv[1], sys.argv[2], json.loads(sys.argv[3]), sys.argv[4], json.loads(sys.argv[5])
 LEDGER, CRASH_AT = os.environ["AS_LEDGER"], int(os.environ.get("AS_CRASH_AT", "0"))
-calls = 0
-
-def load(spec):
-    m, f = spec.split(":"); return importlib.import_module(m), f
-
-def wrap(spec):
-    mod, name = load(spec); orig = getattr(mod, name)
-    @functools.wraps(orig)
-    def w(*a, **k):
-        global calls
-        try:
-            res = orig(*a, **k)
-        except Exception as e:
-            if any(c.__name__ == "EffectInFlight" for c in type(e).__mro__):   # matched by name: no import dependency
-                with open(LEDGER + ".inflight", "a") as fh:
-                    fh.write(json.dumps([spec, repr(a), repr(sorted(k.items()))]) + "\n"); fh.flush(); os.fsync(fh.fileno())
-            raise
-        with open(LEDGER, "a") as fh:
-            fh.write(json.dumps([spec, repr(a), repr(sorted(k.items())), repr(res)]) + "\n"); fh.flush(); os.fsync(fh.fileno())
-        calls += 1
-        if CRASH_AT and calls == CRASH_AT:
-            os._exit(137)  # hard kill right after the side effect
-        return res
-    setattr(mod, name, w)
+from _effects import install, load   # sibling module (this script's dir is sys.path[0]); awaits async effects
 
 sys.path.insert(0, os.getcwd())
-for e in effects: wrap(e)
+install(effects, LEDGER, CRASH_AT)
 from agents import Runner, RunConfig, RunState
 amod, aname = load(agent_spec)
 agent = getattr(amod, aname)()

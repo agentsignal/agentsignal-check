@@ -2,6 +2,28 @@
 import argparse, json, re, sys
 from .detectors import langgraph_crash
 
+def exit_code(report):
+    """1 if any detector FAILs; else 2 if anything errored (ERROR, or WARN = a child that errored, crashed, timed
+    out or never reached the crash point); else 0. Any error or FAIL anywhere is non-zero (Elon, 2026-10-18)."""
+    st = [r.get("status") for r in report.get("results", [])]
+    if not st:
+        return 2
+    if "FAIL" in st:
+        return 1
+    if any(x not in ("PASS", "SKIP") for x in st):
+        return 2
+    return 0
+
+
+def _guarded(fn, framework):
+    """Run a detector; an unexpected exception in the driver becomes an ERROR report (exit 2), not a traceback."""
+    try:
+        return fn()
+    except Exception as e:   # noqa: BLE001 -- any driver bug must fail the run, never pass it
+        return {"framework": framework, "results": [{"detector": "driver", "status": "ERROR",
+                                                       "detail": f"{type(e).__name__}: {e}"}]}
+
+
 def main(argv=None):
     from . import __version__
     p = argparse.ArgumentParser(prog="agentsignal")
@@ -69,7 +91,7 @@ def main(argv=None):
                   '  pip install "agentsignal-check[openai-agents]"', file=sys.stderr)
             return 2
         from .detectors import oai_crash
-        report = oai_crash.run(a.agent, a.effect, json.loads(a.context))
+        report = _guarded(lambda: oai_crash.run(a.agent, a.effect, json.loads(a.context)), "openai-agents")
         a.graph = a.agent
     else:
         if not a.graph:
@@ -80,7 +102,8 @@ def main(argv=None):
             print("agentsignal: LangGraph support not installed. Run:\n"
                   '  pip install "agentsignal-check[langgraph]"', file=sys.stderr)
             return 2
-        report = langgraph_crash.run(a.graph, a.effect, json.loads(a.input), json.loads(a.resume), multi=a.multi_interrupt)
+        report = _guarded(lambda: langgraph_crash.run(a.graph, a.effect, json.loads(a.input), json.loads(a.resume),
+                                                      multi=a.multi_interrupt), "langgraph")
     from .env import collect
     report["env"] = collect()
     if scan_result is not None:
@@ -108,9 +131,12 @@ def main(argv=None):
         open(a.badge, "w").write(svg)
         md = md.replace("agentsignal-badge.svg", a.badge)
         print(md, file=sys.stderr if a.json else sys.stdout)
-    code = 1 if any(r["status"] == "FAIL" for r in report["results"]) else 0
-    code = max(code, scan_code)
+    code = max(exit_code(report), scan_code)
     base = next((r for r in report["results"] if r["detector"] == "baseline"), None)
+    bad = [r for r in report["results"] if r["status"] in ("ERROR", "WARN") and r is not base]
+    if bad and not any(r["status"] == "FAIL" for r in report["results"]):
+        print("agentsignal: ERROR: " + "; ".join(f"{r['detector']} {r['status']}" for r in bad)
+              + ": part of the crash test could not run, so this is not a pass.", file=sys.stderr)
     if base is not None and base["status"] == "ERROR":
         # a broken setup (import error, bad factory, graph/agent raising) must never pass CI
         lines = [l.strip() for l in (base.get("detail") or "").strip().splitlines() if l.strip()]

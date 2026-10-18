@@ -30,3 +30,15 @@ def test_subgraph_parallel_answers_one_at_a_time(tmp_path, monkeypatch):
         assert charges == 3, f"langgraph {v}: expected 1 charge per approval, got {charges}"
     else:
         assert charges == 6, f"langgraph {v}: expected the #9315 re-run (3+2+1=6), got {charges}"
+
+
+def test_keyed_variant_passes_every_detector():
+    """Board 64: the same #9315 graph with each charge keyed by a stable id passes the whole crash test
+    (on <= 1.2.15 the re-runs still happen but the provider dedupes them; on >= 1.2.16 they don't happen)."""
+    pytest.importorskip("langgraph.checkpoint.sqlite")
+    from agentsignal_check.detectors.langgraph_crash import run
+    rep = run("tests.fixtures.subgraph_parallel_graph:build_keyed", ["tests.fixtures.payments:charge"], {"log": []}, True)
+    s = {r["detector"]: r for r in rep["results"]}
+    assert {k: v["status"] for k, v in s.items()} == {d: "PASS" for d in s} and len(s) == 5, s
+    calls = 3 if _ver(md.version("langgraph")) >= (1, 2, 16) else 6
+    assert s["baseline"]["detail"].startswith(f"{calls} effect call(s)"), s["baseline"]

@@ -11,20 +11,22 @@ with RunState.from_json() in a fresh process. Detectors:
 A duplicate = same call args producing DISTINCT results (same result = deduped by an idempotency key).
 """
 import json, os, subprocess, sys, tempfile
-from .langgraph_crash import _dups, _inflight, INFLIGHT_NOTE
+from .langgraph_crash import _dups, _inflight, INFLIGHT_NOTE, run_child, last_json, err_tail
 
 CHILD = os.path.join(os.path.dirname(__file__), "_oai_child.py")
 
 def _child(mode, agent, effects, state, ledger, ctx, crash_at=0):
     env = dict(os.environ, AS_LEDGER=ledger, AS_CRASH_AT=str(crash_at), AS_SCENARIO=state)
     cmd = [sys.executable, CHILD, mode, agent, json.dumps(effects), state, json.dumps(ctx)]
-    return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+    return run_child(cmd, env)
 
 def _last(r):
-    return json.loads(r.stdout.strip().splitlines()[-1])
+    """The child's JSON result line, or None (failed child / no result line)."""
+    v = last_json(r) if r.returncode == 0 else None
+    return v if isinstance(v, dict) else None
 
 def _err(r):
-    return (r.stderr.strip().splitlines() or ["?"])[-1][-300:]
+    return err_tail(r)
 
 def run(agent, effects, ctx):
     results = []
@@ -39,11 +41,13 @@ def run(agent, effects, ctx):
         worst, notes = [], []
         for k in range(1, n + 1):
             st, led = f"{d}/c{k}.json", f"{d}/c{k}.ledger"
-            if _child("start", agent, effects, st, led, ctx).returncode:
-                worst.append(f"crash@{k}: start failed"); continue
+            s0 = _child("start", agent, effects, st, led, ctx)
+            if s0.returncode:
+                worst.append(f"crash@{k}: start failed: {_err(s0)}"); continue
             r1 = _child("resume", agent, effects, st, led, ctx, crash_at=k)
             if r1.returncode != 137:
-                worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})"); continue
+                worst.append(f"crash@{k}: child did not crash (rc={r1.returncode})"
+                             + (f": {_err(r1)}" if r1.returncode else "")); continue
             r2 = _child("resume", agent, effects, st, led, ctx)
             dups, _ = _dups(led)
             if dups: worst.append(f"crash after effect #{k} -> re-executed {dups}")
@@ -55,26 +59,36 @@ def run(agent, effects, ctx):
         # lost approval
         st, led = f"{d}/lost.json", f"{d}/lost.ledger"
         s = _child("start", agent, effects, st, led, ctx)
-        if s.returncode:
-            results.append({"detector": "approval.lost_on_restart", "status": "ERROR", "detail": _err(s)})
-        elif not _last(s)["interruptions"]:
+        started = _last(s)
+        ins = None
+        if s.returncode or started is None:
+            results.append({"detector": "approval.lost_on_restart", "status": "ERROR",
+                            "detail": _err(s) if s.returncode else "start child printed no result line"})
+        elif not started.get("interruptions"):
             results.append({"detector": "approval.lost_on_restart", "status": "SKIP", "detail": "agent never paused for approval"})
+        elif (ins := _last(i := _child("inspect", agent, effects, st, led, ctx))) is None:
+            results.append({"detector": "approval.lost_on_restart", "status": "ERROR",
+                            "detail": _err(i) if i.returncode else "inspect child printed no result line"})
         else:
-            pend = _last(_child("inspect", agent, effects, st, led, ctx))["pending"]
+            pend = ins.get("pending", 0)
             a = _child("approve_save", agent, effects, st, led, ctx)
             r = _child("resume_noapprove", agent, effects, st, led, ctx)
-            if a.returncode or r.returncode:
-                results.append({"detector": "approval.lost_on_restart", "status": "ERROR", "detail": _err(a if a.returncode else r)})
+            info = _last(r)
+            if a.returncode or r.returncode or info is None:
+                bad = a if a.returncode else r
+                results.append({"detector": "approval.lost_on_restart", "status": "ERROR",
+                                "detail": _err(bad) if bad.returncode else "resume child printed no result line"})
             else:
-                info, (_, ran) = _last(r), _dups(led)
+                _, ran = _dups(led)
                 ok = pend > 0 and info["reinterrupted"] == 0 and ran > 0
                 results.append({"detector": "approval.lost_on_restart", "status": "PASS" if ok else "FAIL",
                                 "detail": f"pending after restart={pend}; persisted approval honoured by fresh process "
                                           f"(re-asked={info['reinterrupted']}, effect calls={ran})"})
         # approval replay
         st, led = f"{d}/rep.json", f"{d}/rep.ledger"
-        if _child("start", agent, effects, st, led, ctx).returncode:
-            results.append({"detector": "approval.replay", "status": "ERROR", "detail": "start failed"})
+        s1 = _child("start", agent, effects, st, led, ctx)
+        if s1.returncode:
+            results.append({"detector": "approval.replay", "status": "ERROR", "detail": f"start failed: {_err(s1)}"})
         else:
             snap = open(st).read()
             r1 = _child("resume", agent, effects, st, led, ctx)

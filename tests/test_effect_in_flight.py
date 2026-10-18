@@ -13,9 +13,10 @@ def test_effect_in_flight_on_resume_is_a_clean_refusal():
     assert by["baseline"]["status"] == "PASS"
     ke = by["double_execution.kill_resume"]
     assert ke["status"] == "PASS", ke
-    # whether the killed attempt's checkpoint survives is timing-dependent under LangGraph's async
-    # durability; when the resume does reach the leased effect it must be a clean refusal, never a WARN
+    # The resume always reaches the leased effect now, also when the killed attempt's next checkpoint was
+    # lost under async durability (the child resumes on pending tasks, not only on `next`): clean refusal + note.
     assert "resume failed" not in ke["detail"]
+    assert INFLIGHT_NOTE in ke["detail"], ke
     assert INFLIGHT_NOTE == "in flight; retried after lease with the same provider key"
     assert by["double_execution.kill_before_checkpoint"]["status"] == "PASS"
 
