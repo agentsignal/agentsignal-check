@@ -3,11 +3,11 @@ import datetime
 from .links import SITE, fix_url, WHY_OAI
 FIX = {
     "baseline": ("Side effect runs before/with interrupt() in the same node; LangGraph re-runs the whole node on resume.",
-                 f"{SITE}/templates/langgraph-idempotent-approval/"),
+                 fix_url("baseline")),
     "double_execution.kill_resume": ("A crash right after the effect re-runs it on resume.",
-                 f"{SITE}/templates/langgraph-idempotent-approval/"),
+                 fix_url("baseline")),
     "double_execution.kill_before_checkpoint": ("Crash between the effect and the checkpoint write re-runs the effect (cf. langchain-ai/langgraph#8039).",
-                 f"{SITE}/templates/langgraph-idempotent-approval/"),
+                 fix_url("baseline")),
     "approval.lost_on_restart": ("Pending approvals don't survive a process restart -- use a durable checkpointer.",
                  f"{SITE}/templates/langgraph-human-in-the-loop/"),
     "approval.replay": ("Delivering the same approval twice (double-click, webhook retry, stale checkpoint) re-runs the effect.",

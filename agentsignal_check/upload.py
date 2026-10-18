@@ -113,7 +113,13 @@ def upload(report, out=sys.stderr, timeout=15):
         print("agentsignal: upload failed: server response was not JSON", file=out)
         return False, "bad-response"
     print(f"agentsignal: uploaded run {data.get('run_id', '?')}", file=out)
+    # The printed link always comes from links.py (free pages only, Elon 2026-10-18), not the server's `url`:
+    # the server table can lag the CLI (prod still maps double execution to Pro templates).
+    from .links import fix_url
+    fw = report.get("framework") if isinstance(report, dict) else None
     for l in data.get("fix_links") or []:
         if isinstance(l, dict):
-            print(f"  {l.get('detector', '?')}  {l.get('status', '?')}  {l.get('url', '')}".rstrip(), file=out)
+            det = l.get("detector", "?")
+            link = fix_url(det, fw) if isinstance(det, str) and det != "?" else ""
+            print(f"  {det}  {l.get('status', '?')}  {link}".rstrip(), file=out)
     return True, data.get("run_id")

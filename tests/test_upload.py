@@ -83,7 +83,10 @@ def test_success_body_matches_contract_and_prints_links(env):
     assert b["repo"] == "acme/agent" and b["commit_sha"] == "a" * 40
     assert b["framework"] == "langgraph" and b["version"] == "1.2.15"
     assert [r["status"] for r in b["report"]["results"]] == ["FAIL", "FAIL", "PASS"]  # WARN -> FAIL
-    assert "baseline  FAIL  https://tryagentsignal.com/templates/langgraph-idempotent-approval/" in out
+    # the server mirror (tests/contract.py = prod lib/apikeys.js) still returns the Pro template for baseline;
+    # the CLI prints its own free link instead
+    assert "baseline  FAIL  https://tryagentsignal.com/guides/langgraph-interrupt-resume-twice/" in out
+    assert "idempotent-approval" not in out
     assert "approval.replay  FAIL  https://tryagentsignal.com/templates/langgraph-approval-ui/" in out
     assert "lost_on_restart" not in out and FAKE_KEY not in out
 

@@ -9,9 +9,9 @@ TAGLINE = "We kill your LangGraph agent mid-approval, restart it, and count how 
 DOUBLE = ("baseline", "double_execution.kill_resume", "double_execution.kill_before_checkpoint", "approval.replay")
 LOST = ("approval.lost_on_restart",)
 META = {  # short name, one-line why (what the test does), fix link
-    "baseline": ("Clean run", "Approve once, no crash: does the effect run once?", f"{SITE}/templates/langgraph-idempotent-approval/"),
-    "double_execution.kill_resume": ("Kill after effect", "Hard-kill right after the side effect, resume from checkpoint", f"{SITE}/templates/langgraph-idempotent-approval/"),
-    "double_execution.kill_before_checkpoint": ("Kill before checkpoint", "Hard-kill before the checkpoint write (langgraph#8039)", f"{SITE}/templates/langgraph-idempotent-approval/"),
+    "baseline": ("Clean run", "Approve once, no crash: does the effect run once?", fix_url("baseline")),
+    "double_execution.kill_resume": ("Kill after effect", "Hard-kill right after the side effect, resume from checkpoint", fix_url("baseline")),
+    "double_execution.kill_before_checkpoint": ("Kill before checkpoint", "Hard-kill before the checkpoint write (langgraph#8039)", fix_url("baseline")),
     "approval.lost_on_restart": ("Restart while paused", "Restart the process mid-approval: is the approval still there?", f"{SITE}/templates/langgraph-human-in-the-loop/"),
     "approval.replay": ("Approval delivered twice", "Double-click / webhook retry / stale checkpoint resume", f"{SITE}/templates/langgraph-approval-ui/"),
 }
