@@ -14,7 +14,7 @@ DUP_TOOL_CALLS_URL = f"{G}/duplicate-tool-calls-after-resume/"
 # (tests/test_fix_links.py checks the chosen URL returns 200 with AGENTSIGNAL_NET_TESTS=1).
 LEDGER_PAGE = f"{T}/side-effect-ledger/"
 LEDGER_FALLBACK = DUP_TOOL_CALLS_URL
-LEDGER_LIVE = False
+LEDGER_LIVE = True
 LEDGER_URL = LEDGER_PAGE if LEDGER_LIVE else LEDGER_FALLBACK
 SCAN_FIX_LABEL = "Fix (free, copy-paste)" if LEDGER_LIVE else "Fix (free guide)"
 

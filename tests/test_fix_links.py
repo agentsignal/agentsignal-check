@@ -34,7 +34,7 @@ def test_scan_fix_link_is_one_switchable_constant():
     assert links.LEDGER_PAGE == "https://tryagentsignal.com/templates/side-effect-ledger/"
     expected = links.LEDGER_PAGE if links.LEDGER_LIVE else links.LEDGER_FALLBACK
     assert links.LEDGER_URL == expected and links.SCAN_FIX_URL == expected and links.scan_fix_url() == expected
-    assert links.LEDGER_LIVE is False      # flip in the patch after board 54 serves 200 (release note)
+    assert links.LEDGER_LIVE is True       # side-effect-ledger template serves 200 (checked for v0.4.0)
 
 
 def test_openai_agents_links_never_point_at_langgraph():
