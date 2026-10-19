@@ -1,4 +1,4 @@
-"""Approval in its own node, effect in a separate node keyed by an idempotency key."""
+"""Approval in its own node; the effect node is guarded only by a state check (no idempotency key)."""
 from typing import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
